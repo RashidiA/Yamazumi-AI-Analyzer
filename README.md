@@ -18,20 +18,20 @@ A high-performance Computer Vision tool that uses MediaPipe Pose Estimation to a
 1. Requirements
 Create a requirements.txt file and paste the following:
 
-streamlit
-streamlit-webrtc
-opencv-python-headless
-mediapipe==0.10.11
-pandas
-plotly
-reportlab
-numpy
+streamlit  
+streamlit-webrtc  
+opencv-python-headless  
+mediapipe==0.10.11  
+pandas  
+plotly  
+reportlab  
+numpy  
 
 2. System Dependencies
 For Streamlit Cloud deployment, you MUST include a packages.txt file to prevent OpenCV errors:
 
-libgl1
-libglib2.0-0
+libgl1  
+libglib2.0-0  
 
 3. Local Deployment
 Run the following commands in your terminal:
