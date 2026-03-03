@@ -58,5 +58,7 @@ Walking (NVA): Detected via horizontal displacement of the torso/nose.
 Waiting (NVA): Logged when no significant movement is detected for > 2 seconds.
 
 Citation :  
-Asari, R. (2026). Yamazumi AI Analyzer.  
-Zenodo. https://doi.org/10.5281/zenodo.18850496
+Mohd Rashidi Asari. (2026).  
+RashidiA/Yamazumi-AI-Analyzer:  
+Initial public release : Yamazumi Live AI Analysis (v1.0.1).  
+Zenodo. https://doi.org/10.5281/zenodo.18850820
