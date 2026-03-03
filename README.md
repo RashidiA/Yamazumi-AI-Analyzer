@@ -1,4 +1,4 @@
-🏭 Automotive Industrial AI Suite
+🏭 Automotive Industrial AI Suite  
 This repository contains a specialized suite of Streamlit applications designed for Lean Manufacturing Motion Studies.
 
 🚀 Applications Included
