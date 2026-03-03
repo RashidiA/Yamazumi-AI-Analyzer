@@ -48,7 +48,7 @@ Allow Camera Access when prompted by the browser.
 
 Press Start to begin the live AI Motion Study.
 
-To finish a cycle, wave your Right Hand in the yellow "FINISH" box on the screen.
+To finish a cycle, wave your Right Hand in the yellow "FINISH" box on the screen.  
 
 📊 Logic & Methodology
 Value Added (VA): Triggered when hands are raised relative to head position (simulating assembly work).
@@ -56,3 +56,7 @@ Value Added (VA): Triggered when hands are raised relative to head position (sim
 Walking (NVA): Detected via horizontal displacement of the torso/nose.
 
 Waiting (NVA): Logged when no significant movement is detected for > 2 seconds.
+
+Citation :  
+Asari, R. (2026). Yamazumi AI Analyzer.  
+Zenodo. https://doi.org/10.5281/zenodo.18850496
