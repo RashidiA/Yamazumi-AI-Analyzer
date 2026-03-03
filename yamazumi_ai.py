@@ -6,6 +6,17 @@ import pandas as pd
 import plotly.express as px
 from datetime import datetime
 
+# --- FIX FOR ATTRIBUTE ERROR ---
+mp_pose = mp.solutions.pose
+mp_drawing = mp.solutions.drawing_utils
+pose = mp_pose.Pose(
+    static_image_mode=False,
+    model_complexity=1,
+    enable_segmentation=False,
+    min_detection_confidence=0.5,
+    min_tracking_confidence=0.5
+)
+
 # --- AI & POSE SETUP ---
 mp_pose = mp.solutions.pose
 pose = mp_pose.Pose(min_detection_confidence=0.5, min_tracking_confidence=0.5)
@@ -136,5 +147,6 @@ while cap.isOpened():
                       annotation_text="TARGET TAKT", annotation_position="top right")
         
         chart_area.plotly_chart(fig, use_container_width=True)
+
 
 cap.release()
