@@ -4,4 +4,4 @@ mediapipe
 opencv-python-headless
 pandas
 fpdf2
-pyav
+av==12.1.0
