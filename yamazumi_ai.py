@@ -6,113 +6,137 @@ import mediapipe as mp
 import time
 import pandas as pd
 from fpdf import FPDF
+import io
 import queue
+import os
 
-# 1. SETUP THE DATA PIPE (Outside the Class)
-# This is a thread-safe pipe that won't cause hangs
-if "data_pipe" not in st.session_state:
-    st.session_state.data_pipe = queue.Queue()
+# --- 1. PERMISSION & DIRECTORY SETUP ---
+# Create a local writable directory for MediaPipe models to avoid PermissionError
+MODEL_DIR = os.path.join(os.getcwd(), "mediapipe_models")
+if not os.path.exists(MODEL_DIR):
+    os.makedirs(MODEL_DIR)
 
-if "final_results" not in st.session_state:
-    st.session_state.final_results = []
+# Global queue to pass data from the video thread to the UI thread safely
+if "yamazumi_queue" not in st.session_state:
+    st.session_state.yamazumi_queue = queue.Queue()
 
+if "session_history" not in st.session_state:
+    st.session_state.session_history = []
+
+# --- 2. VIDEO PROCESSOR ENGINE ---
 class YamazumiProcessor(VideoProcessorBase):
     def __init__(self):
-        # Local init to keep it isolated from the main app thread
-        self.pose = mp.solutions.pose.Pose(
-            min_detection_confidence=0.5, 
-            min_tracking_confidence=0.5,
-            model_complexity=0 # Set to 0 (Fastest) to prevent lag/hang
+        # Initialize Pose within the class to keep it isolated
+        self.mp_pose = mp.solutions.pose
+        self.pose = self.mp_pose.Pose(
+            static_image_mode=False,
+            model_complexity=0,  # 0 is fastest and avoids permission issues during download
+            min_detection_confidence=0.5,
+            min_tracking_confidence=0.5
         )
-        self.last_log = time.time()
+        self.mp_draw = mp.solutions.drawing_utils
+        self.last_log_time = time.time()
 
     def recv(self, frame: av.VideoFrame) -> av.VideoFrame:
         img = frame.to_ndarray(format="bgr24")
         img = cv2.flip(img, 1)
         
-        # Keep the processing simple to avoid memory crashes
+        # Process image for pose detection
         rgb = cv2.cvtColor(img, cv2.COLOR_BGR2RGB)
         results = self.pose.process(rgb)
         
         category = "NVA"
         
         if results.pose_landmarks:
-            # We only draw a circle on the nose as a "heartbeat" to show it's working
-            # This is much lighter than drawing the whole skeleton
-            nose = results.pose_landmarks.landmark[mp.solutions.pose.PoseLandmark.NOSE]
-            rw = results.pose_landmarks.landmark[mp.solutions.pose.PoseLandmark.RIGHT_WRIST]
-            lw = results.pose_landmarks.landmark[mp.solutions.pose.PoseLandmark.LEFT_WRIST]
+            # Draw a light skeleton to confirm Abu is watching
+            self.mp_draw.draw_landmarks(
+                img, results.pose_landmarks, self.mp_pose.POSE_CONNECTIONS
+            )
             
-            # Simple VA check
+            # Identify key landmarks
+            nose = results.pose_landmarks.landmark[self.mp_pose.PoseLandmark.NOSE]
+            rw = results.pose_landmarks.landmark[self.mp_pose.PoseLandmark.RIGHT_WRIST]
+            lw = results.pose_landmarks.landmark[self.mp_pose.PoseLandmark.LEFT_WRIST]
+
+            # Logic: VA if hands are above nose level (High Reach Assembly)
             if lw.y < nose.y or rw.y < nose.y:
                 category = "VA"
-                cv2.circle(img, (int(nose.x * img.shape[1]), int(nose.y * img.shape[0])), 10, (0, 255, 0), -1)
             else:
-                cv2.circle(img, (int(nose.x * img.shape[1]), int(nose.y * img.shape[0])), 10, (0, 0, 255), -1)
+                category = "NVA"
 
-            # Log data every 1 second into the pipe
-            now = time.time()
-            if now - self.last_log >= 1.0:
-                # Use the global pipe - do NOT use st.session_state here
-                st.session_state.data_pipe.put(category)
-                self.last_log = now
+            # Push to queue every 1 second (Avoids st.session_state which causes hangs)
+            curr_time = time.time()
+            if curr_time - self.last_log_time >= 1.0:
+                st.session_state.yamazumi_queue.put({
+                    "Category": category, 
+                    "Timestamp": time.strftime("%H:%M:%S")
+                })
+                self.last_log_time = curr_time
 
+        # Visual Feedback on the video stream
+        color = (0, 255, 0) if category == "VA" else (0, 0, 255)
+        cv2.putText(img, f"LVL: {category}", (10, 50), 
+                    cv2.FONT_HERSHEY_SIMPLEX, 1, color, 2)
+        
         return av.VideoFrame.from_ndarray(img, format="bgr24")
 
-# --- UI ---
-st.title("⏱️ Yamazumi Study (Ultra-Stable)")
-st.info("Status: Green dot = VA | Red dot = NVA. If it freezes, refresh the page.")
+# --- 3. STREAMLIT UI ---
+st.set_page_config(page_title="Yamazumi AI Analyzer", layout="wide")
+st.title("⏱️ Yamazumi AI Analyzer v2026")
+st.write("Detecting Value-Added (VA) vs Non-Value-Added (NVA) work via Pose Estimation.")
 
-ctx = webrtc_streamer(
-    key="yamazumi-stable",
-    mode=WebRtcMode.SENDRECV,
-    video_processor_factory=YamazumiProcessor,
-    async_processing=True,
-    rtc_configuration={"iceServers": [{"urls": ["stun:stun.l.google.com:19302"]}]},
-    media_stream_constraints={"video": True, "audio": False},
-)
+col_video, col_report = st.columns([2, 1])
 
-# --- REPORT TRIGGER ---
-st.divider()
-st.subheader("📋 Step 2: Generate Analysis")
+with col_video:
+    st.subheader("Live Feed")
+    # Streamer configuration optimized for Streamlit Cloud
+    webrtc_streamer(
+        key="yamazumi-pro",
+        mode=WebRtcMode.SENDRECV,
+        video_processor_factory=YamazumiProcessor,
+        async_processing=True,
+        rtc_configuration={"iceServers": [{"urls": ["stun:stun.l.google.com:19302"]}]},
+        media_stream_constraints={"video": True, "audio": False},
+    )
 
-if st.button("📥 Sync Data & View Report"):
-    # Drain the pipe into our final results list
-    while not st.session_state.data_pipe.empty():
-        st.session_state.final_results.append(st.session_state.data_pipe.get())
-    
-    if st.session_state.final_results:
-        df = pd.DataFrame(st.session_state.final_results, columns=["Category"])
+with col_report:
+    st.subheader("📊 Session Control")
+    # Sync button pulls data from the Queue into the Session History
+    if st.button("🔄 Sync & View Report", use_container_width=True):
+        while not st.session_state.yamazumi_queue.empty():
+            st.session_state.session_history.append(st.session_state.yamazumi_queue.get())
         
-        # Calculations
-        total = len(df)
-        va = len(df[df['Category'] == 'VA'])
-        ratio = (va / total * 100) if total > 0 else 0
-        
-        # Display Results
-        col1, col2 = st.columns(2)
-        with col1:
-            st.bar_chart(df['Category'].value_counts())
-        with col2:
-            st.metric("Efficiency (VA Ratio)", f"{ratio:.1f}%")
-            st.write(f"Total Time tracked: {total} seconds")
+        if not st.session_state.session_history:
+            st.warning("No data synced yet. Stand in front of the camera!")
 
-        # PDF Export
-        pdf = FPDF()
-        pdf.add_page()
-        pdf.set_font("Arial", 'B', 16)
-        pdf.cell(190, 10, "Yamazumi Productivity Report", ln=True, align='C')
-        pdf.ln(10)
-        pdf.set_font("Arial", size=12)
-        pdf.cell(100, 10, f"Total Observation: {total}s", ln=True)
-        pdf.cell(100, 10, f"VA Ratio: {ratio:.1f}%", ln=True)
+    if st.session_state.session_history:
+        df = pd.DataFrame(st.session_state.session_history)
         
-        pdf_bytes = pdf.output()
-        st.download_button("Download PDF", data=pdf_bytes, file_name="Report.pdf")
-    else:
-        st.error("No data collected. Keep the camera running and move around first!")
+        # Stats Calculation
+        total_sec = len(df)
+        va_sec = len(df[df['Category'] == 'VA'])
+        va_ratio = (va_sec / total_sec * 100) if total_sec > 0 else 0
+        
+        st.metric("Efficiency (VA %)", f"{va_ratio:.1f}%")
+        st.bar_chart(df['Category'].value_counts())
+        
+        # PDF Generation Logic
+        if st.button("📄 Download PDF Report", use_container_width=True):
+            pdf = FPDF()
+            pdf.add_page()
+            pdf.set_font("Arial", 'B', 16)
+            pdf.cell(190, 10, "Yamazumi Productivity Report", ln=True, align='C')
+            pdf.ln(10)
+            pdf.set_font("Arial", size=12)
+            pdf.cell(100, 10, f"Total Duration: {total_sec}s", ln=True)
+            pdf.cell(100, 10, f"VA Time: {va_sec}s", ln=True)
+            pdf.cell(100, 10, f"NVA Time: {total_sec - va_sec}s", ln=True)
+            pdf.cell(100, 10, f"VA Efficiency Ratio: {va_ratio:.1f}%", ln=True)
+            
+            pdf_bytes = pdf.output()
+            st.download_button("Click to Download", data=pdf_bytes, file_name="Yamazumi_Report.pdf")
 
-if st.button("Reset App"):
-    st.session_state.final_results = []
-    st.session_state.data_pipe = queue.Queue()
-    st.rerun()
+    if st.button("🗑️ Clear Data", type="secondary"):
+        st.session_state.session_history = []
+        st.session_state.yamazumi_queue = queue.Queue()
+        st.rerun()
