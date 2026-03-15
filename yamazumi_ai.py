@@ -8,61 +8,63 @@ import pandas as pd
 from fpdf import FPDF
 import queue
 
-# --- 1. SETUP ---
-# Result queue stays outside to survive thread restarts
-if "result_queue" not in st.session_state:
-    st.session_state.result_queue = queue.Queue()
+# 1. SETUP THE DATA PIPE (Outside the Class)
+# This is a thread-safe pipe that won't cause hangs
+if "data_pipe" not in st.session_state:
+    st.session_state.data_pipe = queue.Queue()
 
-if "master_data" not in st.session_state:
-    st.session_state.master_data = []
+if "final_results" not in st.session_state:
+    st.session_state.final_results = []
 
 class YamazumiProcessor(VideoProcessorBase):
     def __init__(self):
+        # Local init to keep it isolated from the main app thread
         self.pose = mp.solutions.pose.Pose(
             min_detection_confidence=0.5, 
-            min_tracking_confidence=0.5
+            min_tracking_confidence=0.5,
+            model_complexity=0 # Set to 0 (Fastest) to prevent lag/hang
         )
-        self.last_log_time = time.time()
+        self.last_log = time.time()
 
     def recv(self, frame: av.VideoFrame) -> av.VideoFrame:
         img = frame.to_ndarray(format="bgr24")
         img = cv2.flip(img, 1)
+        
+        # Keep the processing simple to avoid memory crashes
         rgb = cv2.cvtColor(img, cv2.COLOR_BGR2RGB)
         results = self.pose.process(rgb)
         
         category = "NVA"
         
         if results.pose_landmarks:
-            mp.solutions.drawing_utils.draw_landmarks(
-                img, results.pose_landmarks, mp.solutions.pose.POSE_CONNECTIONS
-            )
-            
+            # We only draw a circle on the nose as a "heartbeat" to show it's working
+            # This is much lighter than drawing the whole skeleton
             nose = results.pose_landmarks.landmark[mp.solutions.pose.PoseLandmark.NOSE]
             rw = results.pose_landmarks.landmark[mp.solutions.pose.PoseLandmark.RIGHT_WRIST]
             lw = results.pose_landmarks.landmark[mp.solutions.pose.PoseLandmark.LEFT_WRIST]
-
-            # Logic: VA if hands are high
+            
+            # Simple VA check
             if lw.y < nose.y or rw.y < nose.y:
                 category = "VA"
+                cv2.circle(img, (int(nose.x * img.shape[1]), int(nose.y * img.shape[0])), 10, (0, 255, 0), -1)
             else:
-                category = "NVA"
+                cv2.circle(img, (int(nose.x * img.shape[1]), int(nose.y * img.shape[0])), 10, (0, 0, 255), -1)
 
-            # Log every 1 second
-            curr = time.time()
-            if curr - self.last_log_time >= 1.0:
-                # Put data into the shared queue
-                st.session_state.result_queue.put({"Category": category, "Time": time.strftime("%H:%M:%S")})
-                self.last_log_time = curr
+            # Log data every 1 second into the pipe
+            now = time.time()
+            if now - self.last_log >= 1.0:
+                # Use the global pipe - do NOT use st.session_state here
+                st.session_state.data_pipe.put(category)
+                self.last_log = now
 
-        cv2.putText(img, f"Status: {category}", (10, 50), cv2.FONT_HERSHEY_SIMPLEX, 1, (0, 255, 0), 2)
         return av.VideoFrame.from_ndarray(img, format="bgr24")
 
-# --- 2. UI ---
-st.title("📊 Yamazumi Study: Final Step")
-st.write("1. Start Camera and do the work.  \n2. Press **Stop** when finished.  \n3. Click **Sync Data** to see the report.")
+# --- UI ---
+st.title("⏱️ Yamazumi Study (Ultra-Stable)")
+st.info("Status: Green dot = VA | Red dot = NVA. If it freezes, refresh the page.")
 
 ctx = webrtc_streamer(
-    key="yamazumi-sync",
+    key="yamazumi-stable",
     mode=WebRtcMode.SENDRECV,
     video_processor_factory=YamazumiProcessor,
     async_processing=True,
@@ -70,49 +72,47 @@ ctx = webrtc_streamer(
     media_stream_constraints={"video": True, "audio": False},
 )
 
-# --- 3. DATA RECOVERY BUTTON ---
+# --- REPORT TRIGGER ---
 st.divider()
-if st.button("🔄 Sync Data & Generate Report"):
-    # Pull everything from the queue into the master list
-    while not st.session_state.result_queue.empty():
-        st.session_state.master_data.append(st.session_state.result_queue.get())
-    
-    if not st.session_state.master_data:
-        st.warning("No data found! Did you stand in front of the camera for at least 1 second?")
-    else:
-        st.success(f"Successfully synced {len(st.session_state.master_data)} seconds of data!")
+st.subheader("📋 Step 2: Generate Analysis")
 
-# --- 4. DISPLAY REPORT ---
-if st.session_state.master_data:
-    df = pd.DataFrame(st.session_state.master_data)
+if st.button("📥 Sync Data & View Report"):
+    # Drain the pipe into our final results list
+    while not st.session_state.data_pipe.empty():
+        st.session_state.final_results.append(st.session_state.data_pipe.get())
     
-    col1, col2 = st.columns(2)
-    with col1:
-        st.subheader("VA vs NVA Distribution")
-        st.bar_chart(df['Category'].value_counts())
-    
-    with col2:
-        st.subheader("Statistics")
+    if st.session_state.final_results:
+        df = pd.DataFrame(st.session_state.final_results, columns=["Category"])
+        
+        # Calculations
         total = len(df)
         va = len(df[df['Category'] == 'VA'])
         ratio = (va / total * 100) if total > 0 else 0
-        st.metric("Efficiency (VA %)", f"{ratio:.1f}%")
+        
+        # Display Results
+        col1, col2 = st.columns(2)
+        with col1:
+            st.bar_chart(df['Category'].value_counts())
+        with col2:
+            st.metric("Efficiency (VA Ratio)", f"{ratio:.1f}%")
+            st.write(f"Total Time tracked: {total} seconds")
 
-    if st.button("📄 Download PDF Report"):
+        # PDF Export
         pdf = FPDF()
         pdf.add_page()
         pdf.set_font("Arial", 'B', 16)
-        pdf.cell(190, 10, "Yamazumi Time Study Report", ln=True, align='C')
+        pdf.cell(190, 10, "Yamazumi Productivity Report", ln=True, align='C')
         pdf.ln(10)
         pdf.set_font("Arial", size=12)
-        pdf.cell(100, 10, f"Total Observation Time: {total}s", ln=True)
-        pdf.cell(100, 10, f"Value Added Time: {va}s", ln=True)
+        pdf.cell(100, 10, f"Total Observation: {total}s", ln=True)
         pdf.cell(100, 10, f"VA Ratio: {ratio:.1f}%", ln=True)
         
-        pdf_out = pdf.output()
-        st.download_button("📥 Click here to Save PDF", data=pdf_out, file_name="Yamazumi_Final.pdf")
+        pdf_bytes = pdf.output()
+        st.download_button("Download PDF", data=pdf_bytes, file_name="Report.pdf")
+    else:
+        st.error("No data collected. Keep the camera running and move around first!")
 
-    if st.button("🗑️ Reset All Data"):
-        st.session_state.master_data = []
-        st.session_state.result_queue = queue.Queue()
-        st.rerun()
+if st.button("Reset App"):
+    st.session_state.final_results = []
+    st.session_state.data_pipe = queue.Queue()
+    st.rerun()
