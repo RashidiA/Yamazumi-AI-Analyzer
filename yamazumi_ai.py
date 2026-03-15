@@ -10,73 +10,112 @@ import streamlit as st
 from streamlit_webrtc import webrtc_streamer, VideoProcessorBase, WebRtcMode, RTCConfiguration
 from fpdf import FPDF
 
-# --- 1. MODEL SETUP ---
-MODEL_PATH = "/tmp/pose_landmarker_lite.task"
+# --- 1. MODEL ASSET PREPARATION ---
+MODEL_PATH = "/tmp/pose_landmarker.task"
 MODEL_URL = "https://storage.googleapis.com/mediapipe-models/pose_landmarker/pose_landmarker_lite/float16/1/pose_landmarker_lite.task"
 
-if not os.path.exists(MODEL_PATH):
-    urllib.request.urlretrieve(MODEL_URL, MODEL_PATH)
+@st.cache_resource
+def download_model():
+    if not os.path.exists(MODEL_PATH):
+        urllib.request.urlretrieve(MODEL_URL, MODEL_PATH)
+    return MODEL_PATH
 
-# --- 2. WEBRTC STUN CONFIG (Fixes the hanging screen) ---
-RTC_CONFIGURATION = RTCConfiguration(
-    {"iceServers": [{"urls": ["stun:stun.l.google.com:19302"]}]}
-)
+try:
+    actual_model_path = download_model()
+except Exception as e:
+    st.error(f"Model Download Failed: {e}")
+    actual_model_path = None
 
-# --- 3. SESSION STATE ---
+# --- 2. GLOBAL DATA QUEUE ---
 if "yamazumi_queue" not in st.session_state:
     st.session_state.yamazumi_queue = queue.Queue()
 if "master_data" not in st.session_state:
     st.session_state.master_data = []
 
-# --- 4. AI PROCESSOR ---
+# --- 3. OPTIMIZED AI PROCESSOR ---
 class YamazumiProcessor(VideoProcessorBase):
-    def __init__(self):
-        # Using the Vision Tasks API for Cloud Stability
-        options = mp.tasks.vision.PoseLandmarkerOptions(
-            base_options=mp.tasks.BaseOptions(model_asset_path=MODEL_PATH),
-            running_mode=mp.tasks.vision.RunningMode.VIDEO,
-        )
-        self.landmarker = mp.tasks.vision.PoseLandmarker.create_from_options(options)
+    def __init__(self, model_path):
+        self.model_path = model_path
+        self.landmarker = None
         self.last_log_time = time.time()
+        
+        # Initialize Landmarker inside the worker thread to prevent UI hang
+        if self.model_path:
+            try:
+                BaseOptions = mp.tasks.BaseOptions
+                PoseLandmarker = mp.tasks.vision.PoseLandmarker
+                PoseLandmarkerOptions = mp.tasks.vision.PoseLandmarkerOptions
+                VisionRunningMode = mp.tasks.vision.RunningMode
+
+                options = PoseLandmarkerOptions(
+                    base_options=BaseOptions(model_asset_path=self.model_path),
+                    running_mode=VisionRunningMode.VIDEO,
+                    min_pose_detection_confidence=0.5
+                )
+                self.landmarker = PoseLandmarker.create_from_options(options)
+            except Exception as e:
+                print(f"AI Initialization Error: {e}")
 
     def recv(self, frame: av.VideoFrame) -> av.VideoFrame:
         img = frame.to_ndarray(format="bgr24")
         img = cv2.flip(img, 1)
         
-        mp_image = mp.Image(image_format=mp.ImageFormat.SRGB, data=cv2.cvtColor(img, cv2.COLOR_BGR2RGB))
-        result = self.landmarker.detect_for_video(mp_image, int(time.time() * 1000))
+        category = "NO DATA"
         
-        category = "NVA"
-        if result.pose_landmarks:
-            landmarks = result.pose_landmarks[0]
-            # Hands vs Nose logic
-            category = "VA" if (landmarks[15].y < landmarks[0].y or landmarks[16].y < landmarks[0].y) else "NVA"
+        if self.landmarker:
+            try:
+                mp_image = mp.Image(image_format=mp.ImageFormat.SRGB, data=cv2.cvtColor(img, cv2.COLOR_BGR2RGB))
+                result = self.landmarker.detect_for_video(mp_image, int(time.time() * 1000))
+                
+                if result.pose_landmarks:
+                    landmarks = result.pose_landmarks[0]
+                    # Index 0=Nose, 15=L-Wrist, 16=R-Wrist
+                    nose_y = landmarks[0].y
+                    lw_y = landmarks[15].y
+                    rw_y = landmarks[16].y
 
-            if time.time() - self.last_log_time >= 1.0:
-                st.session_state.yamazumi_queue.put({"Category": category, "Time": time.strftime("%H:%M:%S")})
-                self.last_log_time = time.time()
+                    category = "VA" if (lw_y < nose_y or rw_y < nose_y) else "NVA"
 
+                    # Thread-safe logging
+                    if time.time() - self.last_log_time >= 1.0:
+                        st.session_state.yamazumi_queue.put({
+                            "Category": category, 
+                            "Time": time.strftime("%H:%M:%S")
+                        })
+                        self.last_log_time = time.time()
+            except:
+                category = "ERROR"
+
+        # On-screen HUD
         color = (0, 255, 0) if category == "VA" else (0, 0, 255)
-        cv2.putText(img, f"LVL: {category}", (20, 50), 1, 2, color, 2)
+        cv2.putText(img, f"LVL: {category}", (20, 50), cv2.FONT_HERSHEY_DUPLEX, 1, color, 2)
+        
         return av.VideoFrame.from_ndarray(img, format="bgr24")
 
-# --- 5. APP UI ---
-st.set_page_config(page_title="Yamazumi AI", layout="wide")
+# --- 4. STREAMLIT INTERFACE ---
+st.set_page_config(page_title="Yamazumi AI Stable", layout="wide")
 st.title("⏱️ Yamazumi AI Analyzer")
 
-col_v, col_r = st.columns([2, 1])
+col_left, col_right = st.columns([2, 1])
 
-with col_v:
+with col_left:
+    st.subheader("Live Feed")
     webrtc_streamer(
-        key="yamazumi-fixed",
+        key="yamazumi-final-v7",
         mode=WebRtcMode.SENDRECV,
-        rtc_configuration=RTC_CONFIGURATION, # This line fixes the 'hanging'
-        video_processor_factory=YamazumiProcessor,
+        # STUN servers help bypass Cloud firewalls
+        rtc_configuration={
+            "iceServers": [
+                {"urls": ["stun:stun.l.google.com:19302"]},
+                {"urls": ["stun:stun1.l.google.com:19302"]},
+            ]
+        },
+        video_processor_factory=lambda: YamazumiProcessor(actual_model_path),
         media_stream_constraints={"video": True, "audio": False},
         async_processing=True,
     )
 
-with col_r:
+with col_right:
     st.subheader("📊 Session Control")
     if st.button("🔄 Sync Live Data", use_container_width=True):
         while not st.session_state.yamazumi_queue.empty():
@@ -84,9 +123,23 @@ with col_r:
 
     if st.session_state.master_data:
         df = pd.DataFrame(st.session_state.master_data)
-        st.metric("Efficiency", f"{(len(df[df['Category'] == 'VA']) / len(df) * 100):.1f}%")
+        va_count = len(df[df['Category'] == 'VA'])
+        total = len(df)
+        ratio = (va_count / total * 100) if total > 0 else 0
+        
+        st.metric("Work Efficiency (VA)", f"{ratio:.1f}%")
         st.bar_chart(df['Category'].value_counts())
         
+        if st.button("📥 Export PDF"):
+            pdf = FPDF()
+            pdf.add_page()
+            pdf.set_font("Helvetica", 'B', 16)
+            pdf.cell(0, 10, "Yamazumi Productivity Report", ln=True)
+            pdf.set_font("Helvetica", size=12)
+            pdf.cell(0, 10, f"VA Ratio: {ratio:.1f}%", ln=True)
+            pdf_bytes = pdf.output()
+            st.download_button("Download PDF", data=bytes(pdf_bytes), file_name="Report.pdf")
+
     if st.button("Clear Session"):
         st.session_state.master_data = []
         st.rerun()
