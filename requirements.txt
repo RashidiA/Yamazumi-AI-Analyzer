@@ -1,7 +1,4 @@
 streamlit
-streamlit-webrtc
-mediapipe
 opencv-python-headless
-pandas
-fpdf2
-av
+mediapipe==0.10.11
+streamlit-webrtc
