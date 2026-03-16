@@ -1,107 +1,75 @@
 import streamlit as st
-from streamlit_webrtc import webrtc_streamer, VideoTransformerBase, RTCConfiguration
 import cv2
+import numpy as np
 import mediapipe as mp
-import pandas as pd
-import time
-import os
-import urllib.request
-from fpdf import FPDF
-from queue import Queue
+# Explicitly import solutions to prevent AttributeError on Streamlit Cloud
+from mediapipe.python.solutions import pose as mp_pose_module
+from mediapipe.python.solutions import drawing_utils as mp_drawing
 
-# 1. RTC Configuration for Cloud Stability (Fixes the "Connection Timeout")
-RTC_CONFIGURATION = RTCConfiguration(
-    {"iceServers": [{"urls": ["stun:stun.l.google.com:19302"]}]}
+# --- Page Config ---
+st.set_page_config(page_title="Industrial Yamazumi AI", layout="wide")
+st.title("⏱️ Industrial Yamazumi AI Analyzer")
+
+# --- Initialize MediaPipe Solutions ---
+# We use the explicitly imported modules here
+mp_pose = mp_pose_module
+drawing_spec = mp_drawing.DrawingSpec(thickness=2, circle_radius=2)
+
+# Initialize the Pose model
+pose = mp_pose.Pose(
+    static_image_mode=False,
+    model_complexity=1,
+    smooth_landmarks=True,
+    min_detection_confidence=0.5,
+    min_tracking_confidence=0.5
 )
 
-# 2. Path Fix for MediaPipe Models on Streamlit Cloud
-MODEL_DIR = "/tmp/mediapipe_models"
-MODEL_PATH = os.path.join(MODEL_DIR, "pose_landmarker_full.task")
+# --- Session State for Data Tracking ---
+if 'cycle_times' not in st.session_state:
+    st.session_state.cycle_times = []
 
-if not os.path.exists(MODEL_DIR):
-    os.makedirs(MODEL_DIR)
+# --- Sidebar Controls ---
+st.sidebar.header("Session Control")
+if st.sidebar.button("Clear History"):
+    st.session_state.cycle_times = []
+    st.rerun()
 
-# Download model manually if it doesn't exist to avoid PermissionError
-if not os.path.exists(MODEL_PATH):
-    url = "https://storage.googleapis.com/mediapipe-models/pose_landmarker/pose_landmarker_full/float16/1/pose_landmarker_full.task"
-    urllib.request.urlretrieve(url, MODEL_PATH)
+# --- Layout ---
+col1, col2 = st.columns([2, 1])
 
-# Initialize MediaPipe
-mp_pose = mp.solutions.pose
-mp_drawing = mp.solutions.drawing_utils
+with col1:
+    st.subheader("Live Analysis")
+    # Using streamlit's native camera input or a video file uploader
+    # Note: For real-time WebRTC, additional setup with streamlit-webrtc is required
+    img_file = st.camera_input("Capture motion for Yamazumi analysis")
 
-# Shared Queue for Thread-Safe Data Logging
-if "data_queue" not in st.session_state:
-    st.session_state.data_queue = Queue()
-if "history" not in st.session_state:
-    st.session_state.history = []
+    if img_file:
+        # Convert the file to an OpenCV image
+        file_bytes = np.frombuffer(img_file.getvalue(), np.uint8)
+        frame = cv2.imdecode(file_bytes, 1)
+        rgb_frame = cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)
 
-class YamazumiTransformer(VideoTransformerBase):
-    def __init__(self):
-        self.pose = mp_pose.Pose(static_image_mode=False, min_detection_confidence=0.5)
-        self.last_log_time = time.time()
+        # Process the frame with MediaPipe
+        results = pose.process(rgb_frame)
 
-    def transform(self, frame):
-        img = frame.to_ndarray(format="bgr24")
-        img = cv2.flip(img, 1)
-        results = self.pose.process(cv2.cvtColor(img, cv2.COLOR_BGR2RGB))
-        
-        status = "NVA"  # Default to Non-Value Added
-        
+        # Draw landmarks if detected
         if results.pose_landmarks:
-            mp_drawing.draw_landmarks(img, results.pose_landmarks, mp_pose.POSE_CONNECTIONS)
-            
-            # Simplified Logic: Hands above Nose = Value Added (VA)
-            landmarks = results.pose_landmarks.landmark
-            nose_y = landmarks[mp_pose.PoseLandmark.NOSE].y
-            l_wrist_y = landmarks[mp_pose.PoseLandmark.LEFT_WRIST].y
-            r_wrist_y = landmarks[mp_pose.PoseLandmark.RIGHT_WRIST].y
-            
-            if l_wrist_y < nose_y or r_wrist_y < nose_y:
-                status = "VA"
-
-            # Log data every 1 second
-            current_time = time.time()
-            if current_time - self.last_log_time >= 1.0:
-                st.session_state.data_queue.put({"Time": time.strftime("%H:%M:%S"), "Status": status})
-                self.last_log_time = current_time
-
-        cv2.putText(img, f"Status: {status}", (50, 50), cv2.FONT_HERSHEY_SIMPLEX, 1, (0, 255, 0) if status == "VA" else (0, 0, 255), 2)
-        return img
-
-def main():
-    st.set_page_config(page_title="Industrial Yamazumi AI", layout="wide")
-    st.title("Industrial Yamazumi AI")
-
-    col1, col2 = st.columns([2, 1])
-
-    with col1:
-        st.subheader("Live Analysis")
-        webrtc_streamer(
-            key="yamazumi-analyzer",
-            video_transformer_factory=YamazumiTransformer,
-            rtc_configuration=RTC_CONFIGURATION,
-            media_stream_constraints={"video": True, "audio": False},
-        )
-
-    with col2:
-        st.subheader("📊 Statistics")
-        if st.button("🔄 Sync Live Data"):
-            while not st.session_state.data_queue.empty():
-                st.session_state.history.append(st.session_state.data_queue.get())
+            mp_drawing.draw_landmarks(
+                frame, 
+                results.pose_landmarks, 
+                mp_pose.POSE_CONNECTIONS,
+                landmark_drawing_spec=drawing_spec
+            )
+            st.success("Operator Motion Detected")
         
-        if st.session_state.history:
-            df = pd.DataFrame(st.session_state.history)
-            st.dataframe(df.tail(10), use_container_width=True)
-            
-            va_count = len(df[df["Status"] == "VA"])
-            total = len(df)
-            efficiency = (va_count / total) * 100
-            st.metric("Cycle Efficiency", f"{efficiency:.1f}%")
+        st.image(frame, channels="BGR", use_container_width=True)
 
-        if st.button("Clear History"):
-            st.session_state.history = []
-            st.rerun()
+with col2:
+    st.subheader("📊 Statistics")
+    if st.session_state.cycle_times:
+        st.bar_chart(st.session_state.cycle_times)
+    else:
+        st.info("No data collected yet. Start detection to see the Yamazumi chart.")
 
-if __name__ == "__main__":
-    main()
+# Cleanup
+pose.close()
