@@ -1,90 +1,81 @@
 import streamlit as st
+from streamlit_webrtc import webrtc_streamer, VideoProcessorBase, WebRtcMode
+import av
 import cv2
-import numpy as np
-import pandas as pd
 import mediapipe as mp
+import time
+import pandas as pd
+import numpy as np
 
-# --- Page Setup ---
-st.set_page_config(page_title="Industrial Yamazumi AI", layout="wide")
+# --- MEDIAPIPE LOADER ---
+import mediapipe.python.solutions.pose as mp_pose
+import mediapipe.python.solutions.drawing_utils as mp_drawing
 
-st.title("⏱️ Industrial Yamazumi AI Analyzer")
-st.caption("Motion-Based Workload Balancing (Python 3.11 Stable)")
+class YamazumiProcessor(VideoProcessorBase):
+    def __init__(self):
+        self.pose = mp_pose.Pose(min_detection_confidence=0.5, min_tracking_confidence=0.5)
+        # Store previous positions to detect "Micro-motions" on the table
+        self.prev_rw_x, self.prev_rw_y = 0, 0
+        self.prev_lw_x, self.prev_lw_y = 0, 0
 
-# --- Stable AI Initialization ---
-@st.cache_resource
-def load_ai_engine():
-    mp_pose = mp.solutions.pose
-    mp_drawing = mp.solutions.drawing_utils
-    engine = mp_pose.Pose(
-        static_image_mode=False,
-        model_complexity=1,
-        min_detection_confidence=0.5,
-        min_tracking_confidence=0.5
-    )
-    return engine, mp_pose, mp_drawing
-
-try:
-    pose_engine, mp_pose, mp_drawing = load_ai_engine()
-except Exception as e:
-    st.error(f"AI Engine Error: {e}")
-    st.stop()
-
-# --- Session Persistence ---
-if 'yamazumi_data' not in st.session_state:
-    st.session_state.yamazumi_data = {"VA": 0.0, "Waste": 0.0}
-
-# --- Sidebar ---
-st.sidebar.header("Industrial Parameters")
-takt_time = st.sidebar.number_input("Takt Time (s)", value=30.0)
-time_increment = st.sidebar.slider("Capture Increment (s)", 0.1, 2.0, 0.5)
-
-if st.sidebar.button("Reset Study Data", type="primary"):
-    st.session_state.yamazumi_data = {"VA": 0.0, "Waste": 0.0}
-    st.rerun()
-
-# --- Main Interface ---
-col_cam, col_viz = st.columns([1.5, 1])
-
-with col_cam:
-    st.subheader("🎥 Motion Analysis")
-    input_img = st.camera_input("Capture Operator Position")
-
-    if input_img:
-        bytes_data = input_img.getvalue()
-        cv_img = cv2.imdecode(np.frombuffer(bytes_data, np.uint8), cv2.IMREAD_COLOR)
-        rgb_img = cv2.cvtColor(cv_img, cv2.COLOR_BGR2RGB)
+    def recv(self, frame: av.VideoFrame) -> av.VideoFrame:
+        img = frame.to_ndarray(format="bgr24")
+        img = cv2.flip(img, 1)
+        h, w, _ = img.shape
         
-        results = pose_engine.process(rgb_img)
+        rgb = cv2.cvtColor(img, cv2.COLOR_BGR2RGB)
+        results = self.pose.process(rgb)
+        
+        action = "Waiting (NVA)"
 
         if results.pose_landmarks:
-            mp_drawing.draw_landmarks(rgb_img, results.pose_landmarks, mp_pose.POSE_CONNECTIONS)
+            mp_drawing.draw_landmarks(img, results.pose_landmarks, mp_pose.POSE_CONNECTIONS)
             
-            # Posture Logic: Bending Detection
-            landmarks = results.pose_landmarks.landmark
-            nose_y = landmarks[mp_pose.PoseLandmark.NOSE].y
-            shoulder_y = (landmarks[mp_pose.PoseLandmark.LEFT_SHOULDER].y + 
-                          landmarks[mp_pose.PoseLandmark.RIGHT_SHOULDER].y) / 2
-            
-            # If nose is below shoulder line + 5% threshold, mark as Waste
-            category = "Waste" if nose_y > (shoulder_y + 0.05) else "VA"
-            st.session_state.yamazumi_data[category] += time_increment
-            
-            st.image(rgb_img, use_container_width=True)
-            if category == "Waste":
-                st.warning("Waste Detected: Operator Bending")
-            else:
-                st.success("Value-Added Motion")
-        else:
-            st.error("No operator detected.")
+            nose = results.pose_landmarks.landmark[mp_pose.PoseLandmark.NOSE]
+            rw = results.pose_landmarks.landmark[mp_pose.PoseLandmark.RIGHT_WRIST]
+            lw = results.pose_landmarks.landmark[mp_pose.PoseLandmark.LEFT_WRIST]
 
-with col_viz:
-    st.subheader("📊 Yamazumi Balancing")
-    total_val = sum(st.session_state.yamazumi_data.values())
-    st.metric("Cycle Time", f"{total_val:.1f}s", delta=f"{takt_time - total_val:.1f}s to Takt")
-    
-    # Charting
-    df_plot = pd.DataFrame([st.session_state.yamazumi_data])
-    st.bar_chart(df_plot)
-    
-    if total_val > takt_time:
-        st.error(f"OVERBURDEN: Cycle exceeds Takt!")
+            # 1. CALCULATE MOTION DELTA (Movement since last frame)
+            # This detects "Fidgeting/Working" even if hands are low
+            rw_delta = abs(rw.x - self.prev_rw_x) + abs(rw.y - self.prev_rw_y)
+            lw_delta = abs(lw.x - self.prev_lw_x) + abs(lw.y - self.prev_lw_y)
+            total_motion = rw_delta + lw_delta
+
+            # Update history for next frame
+            self.prev_rw_x, self.prev_rw_y = rw.x, rw.y
+            self.prev_lw_x, self.prev_lw_y = lw.x, lw.y
+
+            # 2. HYBRID CLASSIFICATION LOGIC
+            # Rule A: Standard Assembly (Hands up)
+            if lw.y < nose.y or rw.y < nose.y:
+                action = "Process (VA)"
+            
+            # Rule B: Table Sub-Assembly (Hands low but moving > threshold)
+            # 0.002 is a sensitive threshold for micro-motions
+            elif total_motion > 0.002:
+                action = "Process (VA) - Table"
+            
+            # Rule C: Walking (Body shift)
+            elif abs(nose.x - 0.5) > 0.20:
+                action = "Walking (NVA)"
+            
+            else:
+                action = "Waiting (NVA)"
+
+        # Visual Feedback
+        color = (0, 255, 0) if "VA" in action else (0, 0, 255)
+        cv2.putText(img, f"ACTION: {action}", (20, 50), cv2.FONT_HERSHEY_SIMPLEX, 1, color, 2)
+        
+        return av.VideoFrame.from_ndarray(img, format="bgr24")
+
+# --- UI LAYOUT ---
+st.title("⏱️ Hybrid AI Yamazumi (Table + Standard)")
+st.info("Detects high-reach assembly and low-table sub-assembly work.")
+
+webrtc_streamer(
+    key="hybrid-yamazumi",
+    mode=WebRtcMode.SENDRECV,
+    video_processor_factory=YamazumiProcessor,
+    rtc_configuration={"iceServers": [{"urls": ["stun:stun.l.google.com:19302"]}]},
+    media_stream_constraints={"video": True, "audio": False},
+)
