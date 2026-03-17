@@ -13,7 +13,7 @@ st.caption("Motion-Based Workload Balancing & Cycle Time Extraction")
 # --- Optimized Model Loading ---
 @st.cache_resource
 def get_pose_model():
-    # Direct access to the solutions sub-module for better stability
+    # Accessing the solutions sub-module directly for environment stability
     return mp.solutions.pose.Pose(
         static_image_mode=False,
         model_complexity=1,
@@ -22,102 +22,66 @@ def get_pose_model():
         min_tracking_confidence=0.5
     )
 
-pose_model = get_pose_model()
+pose_analyzer = get_pose_model()
 mp_pose = mp.solutions.pose
 mp_drawing = mp.solutions.drawing_utils
-drawing_spec = mp_drawing.DrawingSpec(thickness=2, circle_radius=2, color=(0, 255, 0))
 
-# --- Session State Management ---
+# --- Session State ---
 if 'cycle_times' not in st.session_state:
     st.session_state.cycle_times = {"VA": 0.0, "NVA": 0.0, "Waste": 0.0}
-
 if 'log' not in st.session_state:
     st.session_state.log = []
 
-# --- Sidebar Controls ---
-st.sidebar.header("Industrial Settings")
-takt_time = st.sidebar.number_input("Target Takt Time (s)", min_value=1.0, value=30.0)
-increment_val = st.sidebar.slider("Analysis Time Increment (s)", 0.1, 2.0, 0.5)
+# --- Sidebar ---
+st.sidebar.header("Industrial Parameters")
+takt_time = st.sidebar.number_input("Takt Time (s)", min_value=1.0, value=30.0)
+increment = st.sidebar.slider("Time Increment (s)", 0.1, 2.0, 0.5)
 
-if st.sidebar.button("Reset All Data", type="primary"):
+if st.sidebar.button("Reset Data"):
     st.session_state.cycle_times = {"VA": 0.0, "NVA": 0.0, "Waste": 0.0}
     st.session_state.log = []
     st.rerun()
 
-# --- Main Interface ---
+# --- Analysis Logic ---
 col1, col2 = st.columns([1.5, 1])
 
 with col1:
-    st.subheader("🎥 Motion Capture Analysis")
-    img_file = st.camera_input("Capture operator movement")
+    st.subheader("🎥 Motion Capture")
+    img_file = st.camera_input("Snapshot for Analysis")
 
     if img_file:
-        # 1. Convert Streamlit upload to OpenCV BGR
         file_bytes = np.frombuffer(img_file.getvalue(), np.uint8)
-        bgr_frame = cv2.imdecode(file_bytes, 1)
-        
-        # 2. Convert to RGB for MediaPipe processing
-        rgb_frame = cv2.cvtColor(bgr_frame, cv2.COLOR_BGR2RGB)
-
-        # 3. MediaPipe Inference
-        results = pose_model.process(rgb_frame)
+        frame = cv2.imdecode(file_bytes, 1)
+        rgb_frame = cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)
+        results = pose_analyzer.process(rgb_frame)
 
         if results.pose_landmarks:
-            # Draw landmarks on a copy of the RGB frame
-            annotated_image = rgb_frame.copy()
-            mp_drawing.draw_landmarks(
-                annotated_image, 
-                results.pose_landmarks, 
-                mp_pose.POSE_CONNECTIONS,
-                landmark_drawing_spec=drawing_spec
-            )
+            annotated = rgb_frame.copy()
+            mp_drawing.draw_landmarks(annotated, results.pose_landmarks, mp_pose.POSE_CONNECTIONS)
             
-            # --- Industrial Logic (Bending Detection) ---
+            # Ergonomic Logic
             landmarks = results.pose_landmarks.landmark
             nose_y = landmarks[mp_pose.PoseLandmark.NOSE].y
-            l_shoulder_y = landmarks[mp_pose.PoseLandmark.LEFT_SHOULDER].y
-            r_shoulder_y = landmarks[mp_pose.PoseLandmark.RIGHT_SHOULDER].y
-            avg_shoulder_y = (l_shoulder_y + r_shoulder_y) / 2
+            shoulder_y = (landmarks[mp_pose.PoseLandmark.LEFT_SHOULDER].y + 
+                          landmarks[mp_pose.PoseLandmark.RIGHT_SHOULDER].y) / 2
 
-            # If nose is lower than shoulders, classify as Waste (excessive bending)
-            if nose_y > avg_shoulder_y + 0.05:
-                category = "Waste"
-                st.warning("⚠️ Ergonomic Risk: Excessive Bending (Waste)")
-            else:
-                category = "VA"
-                st.success("✅ Standard Motion (Value-Added)")
-
-            # Record Data
-            st.session_state.cycle_times[category] += increment_val
-            st.session_state.log.append({"Action": category, "Duration": increment_val})
+            category = "Waste" if nose_y > (shoulder_y + 0.05) else "VA"
             
-            # Display processed RGB image
-            st.image(annotated_image, caption="Current Posture Analysis", use_container_width=True)
-        else:
-            st.error("No operator detected. Please ensure the torso is in view.")
-            st.image(rgb_frame, use_container_width=True)
+            st.session_state.cycle_times[category] += increment
+            st.session_state.log.append({"Action": category, "Duration": increment})
+            
+            st.image(annotated, use_container_width=True)
+            if category == "Waste":
+                st.warning("Ergonomic Waste (Excessive Bending) Detected")
+            else:
+                st.success("Value-Added Motion Detected")
 
 with col2:
     st.subheader("📊 Yamazumi Analysis")
-    total_time = sum(st.session_state.cycle_times.values())
+    total = sum(st.session_state.cycle_times.values())
+    st.metric("Total Cycle Time", f"{total:.1f}s", delta=f"{takt_time - total:.1f}s Takt Gap")
     
-    m1, m2 = st.columns(2)
-    m1.metric("Total Cycle Time", f"{total_time:.1f}s")
-    m2.metric("Takt Gap", f"{takt_time - total_time:.1f}s", delta_color="inverse")
-
-    # Stacked Bar Chart for Yamazumi
-    df_chart = pd.DataFrame([st.session_state.cycle_times])
-    st.bar_chart(df_chart)
-
-    if total_time > takt_time:
-        st.error(f"OVERBURDEN: Cycle exceeds Takt by {total_time - takt_time:.1f}s")
-    elif total_time > 0:
-        utilization = (total_time / takt_time) * 100
-        st.info(f"Efficiency: {utilization:.1f}% of Takt Time used.")
-
-    with st.expander("Detailed Log & Export"):
-        if st.session_state.log:
-            df_log = pd.DataFrame(st.session_state.log)
-            st.table(df_log)
-            csv = df_log.to_csv(index=False).encode('utf-8')
-            st.download_button("📥 Download Analysis CSV", csv, "yamazumi_data.csv", "text/csv")
+    st.bar_chart(pd.DataFrame([st.session_state.cycle_times]))
+    
+    if total > takt_time:
+        st.error(f"OVERBURDEN: {total - takt_time:.1f}s over Takt!")
