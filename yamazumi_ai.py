@@ -4,87 +4,87 @@ import numpy as np
 import pandas as pd
 import mediapipe as mp
 
-# --- Setup ---
+# --- Page Setup ---
 st.set_page_config(page_title="Industrial Yamazumi AI", layout="wide")
 
 st.title("⏱️ Industrial Yamazumi AI Analyzer")
-st.caption("Motion-Based Workload Balancing & Cycle Time Extraction")
+st.caption("Motion-Based Workload Balancing (Python 3.11 Stable)")
 
-# --- AI Initialization ---
+# --- Stable AI Initialization ---
 @st.cache_resource
-def load_ai():
-    # Stable 0.10.x initialization
+def load_ai_engine():
     mp_pose = mp.solutions.pose
     mp_drawing = mp.solutions.drawing_utils
-    pose = mp_pose.Pose(
+    engine = mp_pose.Pose(
         static_image_mode=False,
         model_complexity=1,
         min_detection_confidence=0.5,
         min_tracking_confidence=0.5
     )
-    return pose, mp_pose, mp_drawing
+    return engine, mp_pose, mp_drawing
 
 try:
-    pose_engine, mp_pose, mp_drawing = load_ai()
+    pose_engine, mp_pose, mp_drawing = load_ai_engine()
 except Exception as e:
-    st.error(f"Initialization Error: {e}")
+    st.error(f"AI Engine Error: {e}")
     st.stop()
 
-# --- Session State ---
-if 'yamazumi' not in st.session_state:
-    st.session_state.yamazumi = {"VA": 0.0, "Waste": 0.0}
+# --- Session Persistence ---
+if 'yamazumi_data' not in st.session_state:
+    st.session_state.yamazumi_data = {"VA": 0.0, "Waste": 0.0}
 
 # --- Sidebar ---
-st.sidebar.header("Parameters")
-takt = st.sidebar.number_input("Takt Time (s)", value=30.0)
-increment = st.sidebar.slider("Capture Seconds", 0.1, 2.0, 0.5)
+st.sidebar.header("Industrial Parameters")
+takt_time = st.sidebar.number_input("Takt Time (s)", value=30.0)
+time_increment = st.sidebar.slider("Capture Increment (s)", 0.1, 2.0, 0.5)
 
-if st.sidebar.button("Reset Data"):
-    st.session_state.yamazumi = {"VA": 0.0, "Waste": 0.0}
+if st.sidebar.button("Reset Study Data", type="primary"):
+    st.session_state.yamazumi_data = {"VA": 0.0, "Waste": 0.0}
     st.rerun()
 
-# --- Main UI ---
-col1, col2 = st.columns([1.5, 1])
+# --- Main Interface ---
+col_cam, col_viz = st.columns([1.5, 1])
 
-with col1:
-    st.subheader("🎥 Analysis")
-    img_file = st.camera_input("Capture Action")
+with col_cam:
+    st.subheader("🎥 Motion Analysis")
+    input_img = st.camera_input("Capture Operator Position")
 
-    if img_file:
-        file_bytes = np.frombuffer(img_file.getvalue(), np.uint8)
-        frame = cv2.imdecode(file_bytes, 1)
-        rgb = cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)
+    if input_img:
+        bytes_data = input_img.getvalue()
+        cv_img = cv2.imdecode(np.frombuffer(bytes_data, np.uint8), cv2.IMREAD_COLOR)
+        rgb_img = cv2.cvtColor(cv_img, cv2.COLOR_BGR2RGB)
         
-        res = pose_engine.process(rgb)
+        results = pose_engine.process(rgb_img)
 
-        if res.pose_landmarks:
-            mp_drawing.draw_landmarks(rgb, res.pose_landmarks, mp_pose.POSE_CONNECTIONS)
+        if results.pose_landmarks:
+            mp_drawing.draw_landmarks(rgb_img, results.pose_landmarks, mp_pose.POSE_CONNECTIONS)
             
-            # Posture Calculation
-            l = res.pose_landmarks.landmark
-            # Detect bending (Nose below average shoulder height)
-            nose_y = l[mp_pose.PoseLandmark.NOSE].y
-            shoulder_y = (l[mp_pose.PoseLandmark.LEFT_SHOULDER].y + l[mp_pose.PoseLandmark.RIGHT_SHOULDER].y) / 2
+            # Posture Logic: Bending Detection
+            landmarks = results.pose_landmarks.landmark
+            nose_y = landmarks[mp_pose.PoseLandmark.NOSE].y
+            shoulder_y = (landmarks[mp_pose.PoseLandmark.LEFT_SHOULDER].y + 
+                          landmarks[mp_pose.PoseLandmark.RIGHT_SHOULDER].y) / 2
             
-            cat = "Waste" if nose_y > (shoulder_y + 0.05) else "VA"
-            st.session_state.yamazumi[cat] += increment
+            # If nose is below shoulder line + 5% threshold, mark as Waste
+            category = "Waste" if nose_y > (shoulder_y + 0.05) else "VA"
+            st.session_state.yamazumi_data[category] += time_increment
             
-            st.image(rgb, use_container_width=True)
-            if cat == "Waste":
-                st.warning("Action Categorized: Waste (Bending/Reaching)")
+            st.image(rgb_img, use_container_width=True)
+            if category == "Waste":
+                st.warning("Waste Detected: Operator Bending")
             else:
-                st.success("Action Categorized: Value-Added")
+                st.success("Value-Added Motion")
         else:
-            st.error("Operator not detected.")
+            st.error("No operator detected.")
 
-with col2:
-    st.subheader("📊 Yamazumi Results")
-    total = sum(st.session_state.yamazumi.values())
-    st.metric("Total Cycle Time", f"{total:.1f}s", delta=f"{takt-total:.1f}s to Takt")
+with col_viz:
+    st.subheader("📊 Yamazumi Balancing")
+    total_val = sum(st.session_state.yamazumi_data.values())
+    st.metric("Cycle Time", f"{total_val:.1f}s", delta=f"{takt_time - total_val:.1f}s to Takt")
     
-    # Visualization
-    df = pd.DataFrame([st.session_state.yamazumi])
-    st.bar_chart(df)
+    # Charting
+    df_plot = pd.DataFrame([st.session_state.yamazumi_data])
+    st.bar_chart(df_plot)
     
-    if total > takt:
-        st.error("OVERBURDEN: Cycle exceeds Takt!")
+    if total_val > takt_time:
+        st.error(f"OVERBURDEN: Cycle exceeds Takt!")
