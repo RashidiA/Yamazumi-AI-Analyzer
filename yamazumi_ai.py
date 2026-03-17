@@ -1,81 +1,78 @@
 import streamlit as st
-from streamlit_webrtc import webrtc_streamer, VideoProcessorBase, WebRtcMode
-import av
 import cv2
-import mediapipe as mp
-import time
-import pandas as pd
 import numpy as np
+import pandas as pd
+import mediapipe as mp
 
-# --- MEDIAPIPE LOADER ---
-import mediapipe.python.solutions.pose as mp_pose
-import mediapipe.python.solutions.drawing_utils as mp_drawing
+# --- Basic Config ---
+st.set_page_config(page_title="Yamazumi AI Analyzer", layout="wide")
+st.title("⏱️ Industrial Yamazumi AI Analyzer")
 
-class YamazumiProcessor(VideoProcessorBase):
-    def __init__(self):
-        self.pose = mp_pose.Pose(min_detection_confidence=0.5, min_tracking_confidence=0.5)
-        # Store previous positions to detect "Micro-motions" on the table
-        self.prev_rw_x, self.prev_rw_y = 0, 0
-        self.prev_lw_x, self.prev_lw_y = 0, 0
+# --- AI Setup ---
+@st.cache_resource
+def init_ai():
+    mp_pose = mp.solutions.pose
+    mp_draw = mp.solutions.drawing_utils
+    model = mp_pose.Pose(
+        static_image_mode=False,
+        model_complexity=1,
+        min_detection_confidence=0.5
+    )
+    return model, mp_pose, mp_draw
 
-    def recv(self, frame: av.VideoFrame) -> av.VideoFrame:
-        img = frame.to_ndarray(format="bgr24")
-        img = cv2.flip(img, 1)
-        h, w, _ = img.shape
-        
+try:
+    engine, mp_pose, mp_draw = init_ai()
+except Exception as e:
+    st.error(f"AI Initialization Failed: {e}")
+    st.stop()
+
+# --- Data Management ---
+if 'study' not in st.session_state:
+    st.session_state.study = {"Value-Add": 0.0, "Waste (Bending)": 0.0}
+
+# --- Sidebar ---
+st.sidebar.header("Study Controls")
+takt = st.sidebar.number_input("Takt Time (s)", value=30.0)
+sec_per_point = st.sidebar.slider("Seconds per click", 0.1, 2.0, 0.5)
+
+if st.sidebar.button("Clear Data", type="primary"):
+    st.session_state.study = {"Value-Add": 0.0, "Waste (Bending)": 0.0}
+    st.rerun()
+
+# --- Main App ---
+left, right = st.columns([1.5, 1])
+
+with left:
+    st.subheader("🎥 Camera Analysis")
+    cam_file = st.camera_input("Snapshot Action")
+
+    if cam_file:
+        img = cv2.imdecode(np.frombuffer(cam_file.getvalue(), np.uint8), 1)
         rgb = cv2.cvtColor(img, cv2.COLOR_BGR2RGB)
-        results = self.pose.process(rgb)
-        
-        action = "Waiting (NVA)"
+        res = engine.process(rgb)
 
-        if results.pose_landmarks:
-            mp_drawing.draw_landmarks(img, results.pose_landmarks, mp_pose.POSE_CONNECTIONS)
+        if res.pose_landmarks:
+            mp_draw.draw_landmarks(rgb, res.pose_landmarks, mp_pose.POSE_CONNECTIONS)
             
-            nose = results.pose_landmarks.landmark[mp_pose.PoseLandmark.NOSE]
-            rw = results.pose_landmarks.landmark[mp_pose.PoseLandmark.RIGHT_WRIST]
-            lw = results.pose_landmarks.landmark[mp_pose.PoseLandmark.LEFT_WRIST]
-
-            # 1. CALCULATE MOTION DELTA (Movement since last frame)
-            # This detects "Fidgeting/Working" even if hands are low
-            rw_delta = abs(rw.x - self.prev_rw_x) + abs(rw.y - self.prev_rw_y)
-            lw_delta = abs(lw.x - self.prev_lw_x) + abs(lw.y - self.prev_lw_y)
-            total_motion = rw_delta + lw_delta
-
-            # Update history for next frame
-            self.prev_rw_x, self.prev_rw_y = rw.x, rw.y
-            self.prev_lw_x, self.prev_lw_y = lw.x, lw.y
-
-            # 2. HYBRID CLASSIFICATION LOGIC
-            # Rule A: Standard Assembly (Hands up)
-            if lw.y < nose.y or rw.y < nose.y:
-                action = "Process (VA)"
+            # Logic: Nose vs Shoulder height
+            marks = res.pose_landmarks.landmark
+            nose_y = marks[0].y
+            sh_y = (marks[11].y + marks[12].y) / 2
             
-            # Rule B: Table Sub-Assembly (Hands low but moving > threshold)
-            # 0.002 is a sensitive threshold for micro-motions
-            elif total_motion > 0.002:
-                action = "Process (VA) - Table"
+            cat = "Waste (Bending)" if nose_y > (sh_y + 0.05) else "Value-Add"
+            st.session_state.study[cat] += sec_per_point
             
-            # Rule C: Walking (Body shift)
-            elif abs(nose.x - 0.5) > 0.20:
-                action = "Walking (NVA)"
-            
-            else:
-                action = "Waiting (NVA)"
+            st.image(rgb, use_container_width=True)
+            st.info(f"Recorded as: {cat}")
+        else:
+            st.error("Operator not detected.")
 
-        # Visual Feedback
-        color = (0, 255, 0) if "VA" in action else (0, 0, 255)
-        cv2.putText(img, f"ACTION: {action}", (20, 50), cv2.FONT_HERSHEY_SIMPLEX, 1, color, 2)
-        
-        return av.VideoFrame.from_ndarray(img, format="bgr24")
-
-# --- UI LAYOUT ---
-st.title("⏱️ Hybrid AI Yamazumi (Table + Standard)")
-st.info("Detects high-reach assembly and low-table sub-assembly work.")
-
-webrtc_streamer(
-    key="hybrid-yamazumi",
-    mode=WebRtcMode.SENDRECV,
-    video_processor_factory=YamazumiProcessor,
-    rtc_configuration={"iceServers": [{"urls": ["stun:stun.l.google.com:19302"]}]},
-    media_stream_constraints={"video": True, "audio": False},
-)
+with right:
+    st.subheader("📊 Yamazumi Balancing")
+    total = sum(st.session_state.study.values())
+    st.metric("Total Cycle Time", f"{total:.1f}s", delta=f"{takt - total:.1f}s to Takt")
+    
+    st.bar_chart(pd.DataFrame([st.session_state.study]))
+    
+    if total > takt:
+        st.error("🚨 OVERBURDEN DETECTED")
