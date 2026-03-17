@@ -4,7 +4,6 @@ numpy
 matplotlib
 plotly
 scipy
-# This is the fix for the current error:
 opencv-python-headless
 mediapipe
 streamlit-webrtc
