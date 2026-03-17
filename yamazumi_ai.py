@@ -4,7 +4,7 @@ import numpy as np
 import mediapipe as mp
 import pandas as pd
 
-# --- Page Config ---
+# --- Page Configuration ---
 st.set_page_config(page_title="Industrial Yamazumi AI", layout="wide")
 
 st.title("⏱️ Industrial Yamazumi AI Analyzer")
@@ -13,7 +13,7 @@ st.caption("Motion-Based Workload Balancing & Cycle Time Extraction")
 # --- Optimized Model Loading ---
 @st.cache_resource
 def get_pose_model():
-    # Direct access to solutions for better stability in cloud environments
+    # Use direct access to solutions for better stability in cloud environments
     return mp.solutions.pose.Pose(
         static_image_mode=False,
         model_complexity=1,
@@ -47,7 +47,7 @@ col1, col2 = st.columns([1.5, 1])
 
 with col1:
     st.subheader("🎥 Motion Capture Analysis")
-    img_file = st.camera_input("Capture operator movement")
+    img_file = st.camera_input("Capture operator movement for time-study")
 
     if img_file:
         # Convert Streamlit upload to OpenCV format
@@ -66,13 +66,13 @@ with col1:
                 mp_pose.POSE_CONNECTIONS
             )
             
-            # Industrial Logic (Bending/Posture Detection)
+            # Industrial Logic: Posture Detection
             landmarks = results.pose_landmarks.landmark
             nose_y = landmarks[mp_pose.PoseLandmark.NOSE].y
             shoulder_y = (landmarks[mp_pose.PoseLandmark.LEFT_SHOULDER].y + 
                           landmarks[mp_pose.PoseLandmark.RIGHT_SHOULDER].y) / 2
 
-            # Basic logic: Nose significantly below shoulders = Waste (Bending)
+            # Identify "Waste" if nose is significantly below shoulder level (Bending)
             if nose_y > shoulder_y + 0.05:
                 category = "Waste"
                 st.warning("⚠️ Ergonomic Risk: Excessive Bending (Waste)")
@@ -86,7 +86,7 @@ with col1:
             
             st.image(annotated_image, use_container_width=True)
         else:
-            st.error("Operator not detected. Ensure full torso is visible.")
+            st.error("Operator not detected. Ensure the full torso is in the camera view.")
             st.image(rgb_frame, use_container_width=True)
 
 with col2:
@@ -102,8 +102,11 @@ with col2:
     st.bar_chart(df_chart)
 
     if total_time > takt_time:
-        st.error(f"OVERBURDEN: Cycle exceeds Takt by {total_time - takt_time:.1f}s")
+        st.error(f"OVERBURDEN: Total cycle exceeds Takt by {total_time - takt_time:.1f}s")
     
     with st.expander("Detailed Analysis Log"):
         if st.session_state.log:
-            st.table(pd.DataFrame(st.session_state.log))
+            df_log = pd.DataFrame(st.session_state.log)
+            st.table(df_log)
+            csv = df_log.to_csv(index=False).encode('utf-8')
+            st.download_button("📥 Download Analysis CSV", csv, "yamazumi_data.csv", "text/csv")
