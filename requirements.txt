@@ -3,4 +3,3 @@ mediapipe
 opencv-python-headless
 numpy
 pandas
-matplotlib
