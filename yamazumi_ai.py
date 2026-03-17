@@ -1,10 +1,19 @@
 import streamlit as st
 import cv2
 import numpy as np
-import mediapipe as mp
 import pandas as pd
 
-# --- Page Configuration ---
+# Defensive MediaPipe Imports
+import mediapipe as mp
+try:
+    from mediapipe.python.solutions import pose as mp_pose
+    from mediapipe.python.solutions import drawing_utils as mp_drawing
+except ImportError:
+    # Fallback for different environments
+    import mediapipe.solutions.pose as mp_pose
+    import mediapipe.solutions.drawing_utils as mp_drawing
+
+# --- Page Config ---
 st.set_page_config(page_title="Industrial Yamazumi AI", layout="wide")
 
 st.title("⏱️ Industrial Yamazumi AI Analyzer")
@@ -13,8 +22,7 @@ st.caption("Motion-Based Workload Balancing & Cycle Time Extraction")
 # --- Optimized Model Loading ---
 @st.cache_resource
 def get_pose_model():
-    # Use direct access to solutions for better stability in cloud environments
-    return mp.solutions.pose.Pose(
+    return mp_pose.Pose(
         static_image_mode=False,
         model_complexity=1,
         smooth_landmarks=True,
@@ -22,9 +30,12 @@ def get_pose_model():
         min_tracking_confidence=0.5
     )
 
-pose_engine = get_pose_model()
-mp_pose = mp.solutions.pose
-mp_drawing = mp.solutions.drawing_utils
+# Initialize Engine
+try:
+    pose_engine = get_pose_model()
+except Exception as e:
+    st.error(f"Error initializing AI engine: {e}")
+    st.stop()
 
 # --- Session State Management ---
 if 'cycle_times' not in st.session_state:
@@ -47,10 +58,10 @@ col1, col2 = st.columns([1.5, 1])
 
 with col1:
     st.subheader("🎥 Motion Capture Analysis")
-    img_file = st.camera_input("Capture operator movement for time-study")
+    img_file = st.camera_input("Capture operator movement")
 
     if img_file:
-        # Convert Streamlit upload to OpenCV format
+        # Convert to OpenCV
         file_bytes = np.frombuffer(img_file.getvalue(), np.uint8)
         frame = cv2.imdecode(file_bytes, 1)
         rgb_frame = cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)
@@ -66,13 +77,12 @@ with col1:
                 mp_pose.POSE_CONNECTIONS
             )
             
-            # Industrial Logic: Posture Detection
+            # Posture Logic: Detect Bending (Waste)
             landmarks = results.pose_landmarks.landmark
             nose_y = landmarks[mp_pose.PoseLandmark.NOSE].y
             shoulder_y = (landmarks[mp_pose.PoseLandmark.LEFT_SHOULDER].y + 
                           landmarks[mp_pose.PoseLandmark.RIGHT_SHOULDER].y) / 2
 
-            # Identify "Waste" if nose is significantly below shoulder level (Bending)
             if nose_y > shoulder_y + 0.05:
                 category = "Waste"
                 st.warning("⚠️ Ergonomic Risk: Excessive Bending (Waste)")
@@ -80,13 +90,13 @@ with col1:
                 category = "VA"
                 st.success("✅ Standard Motion (Value-Added)")
 
-            # Update Session Data
+            # Record Data
             st.session_state.cycle_times[category] += increment_val
             st.session_state.log.append({"Action": category, "Duration": increment_val})
             
             st.image(annotated_image, use_container_width=True)
         else:
-            st.error("Operator not detected. Ensure the full torso is in the camera view.")
+            st.error("Operator not detected.")
             st.image(rgb_frame, use_container_width=True)
 
 with col2:
@@ -95,18 +105,16 @@ with col2:
     
     m1, m2 = st.columns(2)
     m1.metric("Total Cycle Time", f"{total_time:.1f}s")
-    m2.metric("Takt Gap", f"{takt_time - total_time:.1f}s", delta_color="inverse")
+    m2.metric("Takt Gap", f"{takt_time - total_time:.1f}s")
 
-    # Yamazumi Stacked Bar Chart
+    # Bar Chart
     df_chart = pd.DataFrame([st.session_state.cycle_times])
     st.bar_chart(df_chart)
 
     if total_time > takt_time:
-        st.error(f"OVERBURDEN: Total cycle exceeds Takt by {total_time - takt_time:.1f}s")
+        st.error(f"OVERBURDEN: Cycle exceeds Takt by {total_time - takt_time:.1f}s")
     
     with st.expander("Detailed Analysis Log"):
         if st.session_state.log:
             df_log = pd.DataFrame(st.session_state.log)
             st.table(df_log)
-            csv = df_log.to_csv(index=False).encode('utf-8')
-            st.download_button("📥 Download Analysis CSV", csv, "yamazumi_data.csv", "text/csv")
