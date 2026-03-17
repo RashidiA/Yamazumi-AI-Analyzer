@@ -10,10 +10,10 @@ st.set_page_config(page_title="Industrial Yamazumi AI", layout="wide")
 st.title("⏱️ Industrial Yamazumi AI Analyzer")
 st.caption("Motion-Based Workload Balancing & Cycle Time Extraction")
 
-# --- Robust Model Loading ---
+# --- AI Model Loading ---
 @st.cache_resource
 def get_pose_model():
-    # Accessing the pose solution directly from the main mediapipe module
+    # Load MediaPipe Pose solution
     return mp.solutions.pose.Pose(
         static_image_mode=False,
         model_complexity=1,
@@ -28,88 +28,82 @@ try:
     mp_drawing = mp.solutions.drawing_utils
     mp_pose = mp.solutions.pose
 except Exception as e:
-    st.error(f"AI Initialization Error: {e}")
+    st.error(f"AI Engine Initialization Failed: {e}")
     st.stop()
 
-# --- Session State Management ---
+# --- Session State ---
 if 'cycle_times' not in st.session_state:
     st.session_state.cycle_times = {"VA": 0.0, "NVA": 0.0, "Waste": 0.0}
 if 'log' not in st.session_state:
     st.session_state.log = []
 
-# --- Sidebar Controls ---
-st.sidebar.header("Industrial Parameters")
+# --- Sidebar ---
+st.sidebar.header("Industrial Settings")
 takt_time = st.sidebar.number_input("Target Takt Time (s)", min_value=1.0, value=30.0)
-increment_val = st.sidebar.slider("Analysis Time Increment (s)", 0.1, 2.0, 0.5)
+increment = st.sidebar.slider("Time Increment per Capture (s)", 0.1, 2.0, 0.5)
 
-if st.sidebar.button("Reset All Data", type="primary"):
+if st.sidebar.button("Reset Study Data", type="primary"):
     st.session_state.cycle_times = {"VA": 0.0, "NVA": 0.0, "Waste": 0.0}
     st.session_state.log = []
     st.rerun()
 
-# --- Main Interface ---
+# --- Layout ---
 col1, col2 = st.columns([1.5, 1])
 
 with col1:
-    st.subheader("🎥 Motion Capture Analysis")
-    img_file = st.camera_input("Capture operator movement for study")
+    st.subheader("🎥 Motion Analysis")
+    img_file = st.camera_input("Capture Worker Motion")
 
     if img_file:
+        # Convert image to OpenCV format
         file_bytes = np.frombuffer(img_file.getvalue(), np.uint8)
         frame = cv2.imdecode(file_bytes, 1)
         rgb_frame = cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)
-
-        # Process the frame
+        
+        # Run AI Pose Inference
         results = pose_engine.process(rgb_frame)
 
         if results.pose_landmarks:
             annotated_image = rgb_frame.copy()
             mp_drawing.draw_landmarks(
-                annotated_image, 
-                results.pose_landmarks, 
-                mp_pose.POSE_CONNECTIONS
+                annotated_image, results.pose_landmarks, mp_pose.POSE_CONNECTIONS
             )
             
-            # Industrial Posture Logic
+            # Posture Logic for Yamazumi Categorization
             landmarks = results.pose_landmarks.landmark
             nose_y = landmarks[mp_pose.PoseLandmark.NOSE].y
             shoulder_y = (landmarks[mp_pose.PoseLandmark.LEFT_SHOULDER].y + 
                           landmarks[mp_pose.PoseLandmark.RIGHT_SHOULDER].y) / 2
 
-            # Identify Bending as Waste
-            if nose_y > shoulder_y + 0.05:
-                category = "Waste"
-                st.warning("⚠️ Ergonomic Risk: Excessive Bending (Waste)")
-            else:
-                category = "VA"
-                st.success("✅ Standard Motion (Value-Added)")
-
-            # Record session data
-            st.session_state.cycle_times[category] += increment_val
-            st.session_state.log.append({"Action": category, "Duration": increment_val})
+            # If nose is lower than shoulders, classify as Waste (Bending)
+            category = "Waste" if nose_y > (shoulder_y + 0.05) else "VA"
+            
+            # Update Data
+            st.session_state.cycle_times[category] += increment
+            st.session_state.log.append({"Action": category, "Duration": increment})
             
             st.image(annotated_image, use_container_width=True)
+            if category == "Waste":
+                st.warning("⚠️ Waste Detected: Operator Bending (Ergonomic Risk)")
+            else:
+                st.success("✅ Value-Added Motion Recorded")
         else:
-            st.error("Operator not detected. Ensure the camera sees the torso.")
-            st.image(rgb_frame, use_container_width=True)
+            st.error("Operator not detected in frame.")
 
 with col2:
-    st.subheader("📊 Yamazumi Results")
+    st.subheader("📊 Yamazumi Balancing")
     total_time = sum(st.session_state.cycle_times.values())
     
-    m1, m2 = st.columns(2)
-    m1.metric("Total Cycle Time", f"{total_time:.1f}s")
-    m2.metric("Takt Gap", f"{takt_time - total_time:.1f}s", delta_color="inverse")
-
-    # Bar chart for Yamazumi visualization
-    st.bar_chart(pd.DataFrame([st.session_state.cycle_times]))
+    st.metric("Total Cycle Time", f"{total_time:.1f}s", 
+              delta=f"{takt_time - total_time:.1f}s vs Takt", delta_color="inverse")
+    
+    # Generate Yamazumi Chart
+    df_chart = pd.DataFrame([st.session_state.cycle_times])
+    st.bar_chart(df_chart)
 
     if total_time > takt_time:
         st.error(f"OVERBURDEN: Cycle exceeds Takt by {total_time - takt_time:.1f}s")
     
-    with st.expander("Detailed Analysis Log"):
+    with st.expander("Cycle Log"):
         if st.session_state.log:
-            df_log = pd.DataFrame(st.session_state.log)
-            st.table(df_log)
-            csv = df_log.to_csv(index=False).encode('utf-8')
-            st.download_button("📥 Export CSV Study", csv, "study_results.csv", "text/csv")
+            st.table(pd.DataFrame(st.session_state.log))
