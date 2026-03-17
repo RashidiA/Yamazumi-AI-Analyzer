@@ -1,5 +1,21 @@
+# Core Web App & Data
 streamlit
-mediapipe
-opencv-python-headless
-numpy
 pandas
+numpy
+
+# Visualization & Modeling
+matplotlib
+plotly
+scipy
+
+# Computer Vision & Motion Tracking
+# Note: Using headless version to avoid the libffi7/libglib error
+opencv-python-headless
+mediapipe
+
+# Real-time Video Handling
+streamlit-webrtc
+av
+
+# Export & Reporting
+fpdf2
