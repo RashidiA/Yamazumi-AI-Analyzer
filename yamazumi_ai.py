@@ -3,40 +3,51 @@ import streamlit.components.v1 as components
 import pandas as pd
 import time
 
-# --- Setup ---
-st.set_page_config(page_title="Auto-Yamazumi Assembly", layout="centered")
+# --- Page Setup ---
+st.set_page_config(page_title="Auto-Yamazumi Audit Mode", layout="centered")
 
-st.title("🤖 Auto-Yamazumi: Final Assembly")
-st.caption("One-Touch Automated Time Study & Posture Analysis")
+st.title("🤖 Auto-Yamazumi: Live Audit Mode")
+st.caption("Real-time Posture Validation for Final Assembly Lines")
 
 # --- STATE MANAGEMENT ---
 if 'va' not in st.session_state: st.session_state.va = 0
 if 'walk' not in st.session_state: st.session_state.walk = 0
 if 'waste' not in st.session_state: st.session_state.waste = 0
 if 'running' not in st.session_state: st.session_state.running = False
-if 'status' not in st.session_state: st.session_state.status = "IDLE"
+if 'current_status' not in st.session_state: st.session_state.current_status = "IDLE"
 
-# --- THE AR ENGINE (Browser-Side) ---
+# --- THE ENHANCED AR ENGINE (With Live Feedback) ---
 ar_component = """
 <div style="position: relative; width: 100%; overflow: hidden;">
-    <video id="webcam" autoplay playsinline style="width: 100%; border-radius: 15px; background: #000;"></video>
-    <canvas id="output_canvas" style="position: absolute; left: 0; top: 0; width: 100%;"></canvas>
-    <div id="status_box" style="position: absolute; top: 15px; left: 15px; right: 15px; padding: 12px; border-radius: 10px; color: white; font-family: sans-serif; font-weight: bold; font-size: 18px; text-align: center; background: rgba(0,0,0,0.6);">
-        PRESS START TO BEGIN
+    <video id="webcam" autoplay playsinline style="width: 100%; border-radius: 15px; background: #000; display: block;"></video>
+    <canvas id="output_canvas" style="position: absolute; left: 0; top: 0; width: 100%; height: 100%;"></canvas>
+    <div id="status_box" style="position: absolute; top: 15px; left: 15px; right: 15px; padding: 12px; border-radius: 10px; color: white; font-family: sans-serif; font-weight: bold; font-size: 20px; text-align: center; background: rgba(0,0,0,0.7); border: 2px solid white;">
+        WAITING FOR START...
     </div>
 </div>
 
 <script src="https://cdn.jsdelivr.net/npm/@mediapipe/pose"></script>
 <script src="https://cdn.jsdelivr.net/npm/@mediapipe/camera_utils"></script>
+<script src="https://cdn.jsdelivr.net/npm/@mediapipe/drawing_utils"></script>
 
 <script>
 const video = document.getElementById('webcam');
+const canvas = document.getElementById('output_canvas');
+const ctx = canvas.getContext('2d');
 const statusBox = document.getElementById('status_box');
 
 const pose = new Pose({locateFile: (file) => `https://cdn.jsdelivr.net/npm/@mediapipe/pose/${file}`});
-pose.setOptions({modelComplexity: 0, minDetectionConfidence: 0.5});
+pose.setOptions({modelComplexity: 0, minDetectionConfidence: 0.6, minTrackingConfidence: 0.6});
 
 pose.onResults((results) => {
+    canvas.width = video.videoWidth;
+    canvas.height = video.videoHeight;
+    ctx.save();
+    ctx.clearRect(0, 0, canvas.width, canvas.height);
+
+    let currentStatus = "VALUE-ADD";
+    let color = "#2ecc71"; // Green
+
     if (results.poseLandmarks) {
         const nose = results.poseLandmarks[0];
         const l_ank = results.poseLandmarks[31];
@@ -44,23 +55,27 @@ pose.onResults((results) => {
         const avgSh = (results.poseLandmarks[11].y + results.poseLandmarks[12].y) / 2;
         const foot_dist = Math.abs(l_ank.x - r_ank.x);
 
-        let currentStatus = "VALUE-ADD";
-        let color = "rgba(46, 204, 113, 0.9)";
-
+        // Logic Thresholds
         if (nose.y > avgSh + 0.06) {
-            currentStatus = "WASTE";
-            color = "rgba(231, 76, 60, 0.9)";
-        } else if (foot_dist > 0.15) {
+            currentStatus = "WASTE (Bending)";
+            color = "#e74c3c"; // Red
+        } else if (foot_dist > 0.18) {
             currentStatus = "WALKING";
-            color = "rgba(52, 152, 219, 0.9)";
+            color = "#3498db"; // Blue
         }
 
+        // Draw AR Skeleton with the active color
+        drawConnectors(ctx, results.poseLandmarks, POSE_CONNECTIONS, {color: color, lineWidth: 5});
+        drawLandmarks(ctx, results.poseLandmarks, {color: '#ffffff', radius: 2});
+
+        // Update UI Box
         statusBox.innerText = currentStatus;
-        statusBox.style.backgroundColor = color;
+        statusBox.style.backgroundColor = color + "e6"; // Add transparency
         
-        // Push status to Streamlit (Hidden)
-        window.parent.postMessage({type: 'status_update', value: currentStatus}, '*');
+        // Push to Streamlit (Internal messaging)
+        window.parent.postMessage({type: 'ST_STATUS', val: currentStatus.split(' ')[0]}, '*');
     }
+    ctx.restore();
 });
 
 const camera = new Camera(video, {
@@ -71,64 +86,55 @@ camera.start();
 </script>
 """
 
-# Render AR
-components.html(ar_component, height=450)
+# Display AR Feed
+components.html(ar_component, height=480)
 
-# --- CONTROLS ---
+# --- AUDIT CONTROLS ---
 st.divider()
 c1, c2 = st.columns(2)
 
-if c1.button("▶️ START ANALYSIS", type="primary", use_container_width=True):
+if c1.button("▶️ START AUTO-ANALYSIS", type="primary", use_container_width=True):
     st.session_state.running = True
 
-if c2.button("⏹️ STOP & GENERATE", use_container_width=True):
+if c2.button("⏹️ STOP & SAVE", use_container_width=True):
     st.session_state.running = False
 
-# --- AUTO-LOGGING LOOP ---
-# This part "listens" to the AI and adds time automatically
+# --- LIVE TICKER ---
 if st.session_state.running:
-    with st.empty():
-        # Every 1 second, we update the data based on the current AI status
-        # Since we are using basic Streamlit, we simulate the 'Auto-Tick'
-        st.write(f"⏱️ **Recording Station: {st.session_state.status}**")
-        
-        # We add 1 second to the category the AI detects
-        if st.session_state.status == "VALUE-ADD":
-            st.session_state.va += 1
-        elif st.session_state.status == "WALKING":
-            st.session_state.walk += 1
-        else:
-            st.session_state.waste += 1
-            
-        time.sleep(1)
-        st.rerun()
-
-# --- ANALYSIS OUTPUT ---
-st.divider()
-total = st.session_state.va + st.session_state.walk + st.session_state.waste
-
-if total > 0:
-    st.subheader("📊 Yamazumi Analysis Results")
+    # In a full production app, we'd use a custom component to bridge JS status to Python.
+    # For this version, we use a rapid-log helper:
+    st.info(f"🔍 Currently Recording: {st.session_state.status}")
     
-    # Metrics
-    m1, m2, m3 = st.columns(3)
-    m1.metric("Cycle Time", f"{total}s")
-    m2.metric("VA %", f"{(st.session_state.va/total*100):.1f}%")
-    m3.metric("Waste %", f"{((st.session_state.waste+st.session_state.walk)/total*100):.1f}%")
+    # Manual validation buttons (use these if the AI misses a posture)
+    v1, v2, v3 = st.columns(3)
+    if v1.button("+1s VA"): st.session_state.va += 1
+    if v2.button("+1s WALK"): st.session_state.walk += 1
+    if v3.button("+1s WASTE"): st.session_state.waste += 1
+    
+    time.sleep(0.5)
+    st.rerun()
 
-    # Stacked Bar Chart
-    # We create a dataframe for the Yamazumi chart
-    df_chart = pd.DataFrame({
-        "Category": ["VA", "Walking", "Waste"],
-        "Seconds": [st.session_state.va, st.session_state.walk, st.session_state.waste]
+# --- ANALYTICS ---
+total = st.session_state.va + st.session_state.walk + st.session_state.waste
+if total > 0:
+    st.subheader("📊 Station Yamazumi Chart")
+    
+    # Data Visualization
+    chart_df = pd.DataFrame({
+        "Category": ["Value-Add", "Walking", "Bending/Waste"],
+        "Time (s)": [st.session_state.va, st.session_state.walk, st.session_state.waste]
     })
-    st.bar_chart(df_chart.set_index("Category"), color=["#2ecc71"])
+    
+    st.bar_chart(chart_df.set_index("Category"), color=["#2ecc71"])
 
-    # CSV Download (Use this for your PhD report)
-    csv = df_chart.to_csv(index=False).encode('utf-8')
-    st.download_button("📩 Download Research Data", csv, "Yamazumi_Report.csv", "text/csv")
+    col_a, col_b = st.columns(2)
+    col_a.metric("Total Observed Time", f"{total}s")
+    col_b.metric("Process Efficiency", f"{(st.session_state.va/total*100):.1f}%")
 
-if st.button("Reset Session"):
+    # CSV Download for PhD
+    st.download_button("📩 Download Data Report", chart_df.to_csv(index=False), "Time_Study_Audit.csv")
+
+if st.button("Reset Everything"):
     st.session_state.va = st.session_state.walk = st.session_state.waste = 0
     st.session_state.running = False
     st.rerun()
