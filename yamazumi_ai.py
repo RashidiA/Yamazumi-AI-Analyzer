@@ -4,35 +4,39 @@ import pandas as pd
 from fpdf import FPDF
 import time
 
-# --- Page Configuration ---
-st.set_page_config(page_title="Auto-Yamazumi Pro", layout="centered")
+# --- Page Setup ---
+st.set_page_config(page_title="Yamazumi AI Analyzer", layout="centered")
 
-# --- PDF Generator (Standardized for PhD Reporting) ---
+# --- PDF Logic (Fixed for PhD Reports) ---
 def generate_pdf(va, walk, waste, station):
-    total = va + walk + waste
     pdf = FPDF()
     pdf.add_page()
     pdf.set_font("Arial", 'B', 16)
-    pdf.cell(200, 10, txt="Yamazumi AI: Industrial Engineering Report", ln=True, align='C')
+    pdf.cell(200, 10, txt="Yamazumi Industrial Analysis Report", ln=True, align='C')
     pdf.ln(10)
     pdf.set_font("Arial", size=12)
-    pdf.cell(200, 10, txt=f"Station: {station}", ln=True)
-    pdf.cell(200, 10, txt=f"Efficiency (VA%): {(va/total*100 if total > 0 else 0):.1f}%", ln=True)
+    pdf.cell(200, 10, txt=f"Station ID: {station}", ln=True)
+    pdf.cell(200, 10, txt=f"Date: {time.strftime('%Y-%m-%d %H:%M')}", ln=True)
+    
+    total = va + walk + waste
     pdf.ln(10)
-    # Table Results
     pdf.cell(60, 10, "Category", 1); pdf.cell(60, 10, "Time (s)", 1, 1)
     pdf.cell(60, 10, "Value-Add", 1); pdf.cell(60, 10, f"{va}s", 1, 1)
     pdf.cell(60, 10, "Walking", 1); pdf.cell(60, 10, f"{walk}s", 1, 1)
     pdf.cell(60, 10, "Waste", 1); pdf.cell(60, 10, f"{waste}s", 1, 1)
+    pdf.cell(60, 10, "TOTAL", 1); pdf.cell(60, 10, f"{total}s", 1, 1)
+    
     return pdf.output(dest='S').encode('latin-1')
 
-# --- Force Initialize Session States ---
-for key in ['va', 'walk', 'waste']:
-    if key not in st.session_state: st.session_state[key] = 0
+# --- Strict State Initialization ---
+if 'va' not in st.session_state: st.session_state.va = 0
+if 'walk' not in st.session_state: st.session_state.walk = 0
+if 'waste' not in st.session_state: st.session_state.waste = 0
 if 'is_running' not in st.session_state: st.session_state.is_running = False
+if 'show_results' not in st.session_state: st.session_state.show_results = False
 
-st.title("🛡️ Auto-Yamazumi Pro")
-station_id = st.text_input("Station Name", "Final-Assembly-Line")
+st.title("🛡️ Yamazumi AI: Final Assembly")
+station_id = st.text_input("Station Name", "ASSY-LINE-ST01")
 
 # --- AR ENGINE ---
 ar_html = f"""
@@ -40,7 +44,7 @@ ar_html = f"""
     <video id="v" autoplay playsinline style="width: 100%; border-radius: 10px; background: #000;"></video>
     <canvas id="c" style="position: absolute; left: 0; top: 0; width: 100%; height: 100%;"></canvas>
     <div id="status" style="position: absolute; top: 10px; left: 10px; right: 10px; padding: 10px; color: white; font-weight: bold; text-align: center; border-radius: 5px; background: rgba(0,0,0,0.6);">
-        {"⏺️ RECORDING" if st.session_state.is_running else "IDLE"}
+        {"⏺️ ANALYZING..." if st.session_state.is_running else "READY"}
     </div>
 </div>
 <script src="https://cdn.jsdelivr.net/npm/@mediapipe/pose"></script>
@@ -59,9 +63,9 @@ pose.onResults((res) => {{
         const nose = res.poseLandmarks[0];
         const avgSh = (res.poseLandmarks[11].y + res.poseLandmarks[12].y) / 2;
         const foot = Math.abs(res.poseLandmarks[31].x - res.poseLandmarks[32].x);
-        let col = "#2ecc71"; // VA
-        if (nose.y > avgSh + 0.06) col = "#e74c3c"; // Waste
-        else if (foot > 0.12) col = "#3498db"; // Walk
+        let col = "#2ecc71"; 
+        if (nose.y > avgSh + 0.06) col = "#e74c3c"; 
+        else if (foot > 0.12) col = "#3498db"; 
         drawConnectors(ctx, res.poseLandmarks, POSE_CONNECTIONS, {{color: col, lineWidth: 4}});
     }}
 }});
@@ -70,56 +74,69 @@ new Camera(video, {{ onFrame: async () => {{ await pose.send({{image: video}}); 
 """
 components.html(ar_html, height=450)
 
-# --- CONTROLS ---
-col1, col2, col3 = st.columns(3)
-if col1.button("▶️ START", type="primary", use_container_width=True):
+# --- ACTION BUTTONS ---
+st.divider()
+c1, c2, c3 = st.columns(3)
+
+if c1.button("▶️ START", type="primary", use_container_width=True):
     st.session_state.is_running = True
+    st.session_state.show_results = False
     st.rerun()
 
-if col2.button("⏹️ STOP", use_container_width=True):
+if c2.button("⏹️ STOP", use_container_width=True):
     st.session_state.is_running = False
+    st.session_state.show_results = True
     st.rerun()
 
-if col3.button("🔄 RESET", use_container_width=True):
+if c3.button("🔄 RESET", use_container_width=True):
     st.session_state.va = st.session_state.walk = st.session_state.waste = 0
     st.session_state.is_running = False
+    st.session_state.show_results = False
     st.rerun()
 
-# --- RECORDING INTERFACE ---
+# --- LIVE LOGGING (Only visible when running) ---
 if st.session_state.is_running:
-    st.info("Point camera at operator. Use these buttons to log times in real-time:")
+    st.info("Log the activity pulses below while watching the AR Skeleton:")
     b1, b2, b3 = st.columns(3)
-    if b1.button("+1s VA"): st.session_state.va += 1
-    if b2.button("+1s WALK"): st.session_state.walk += 1
+    if b1.button("+1s VALUE-ADD"): st.session_state.va += 1
+    if b2.button("+1s WALKING"): st.session_state.walk += 1
     if b3.button("+1s WASTE"): st.session_state.waste += 1
 
-# --- AUTOMATED ANALYSIS (This section must appear if time > 0) ---
+# --- THE RESULTS BLOCK (Force-Visible after STOP) ---
 total = st.session_state.va + st.session_state.walk + st.session_state.waste
 
-if total > 0:
+if st.session_state.show_results and total > 0:
+    st.success("✅ Analysis Complete! See Report Below:")
     st.divider()
-    st.subheader("📊 Station Yamazumi Analysis")
     
-    # Create the Stacked Data
-    # Each category is a separate column to create the 'Stacked' effect
-    chart_df = pd.DataFrame({
-        "Value-Add (VA)": [st.session_state.va],
-        "Walking (NVA)": [st.session_state.walk],
-        "Bending Waste": [st.session_state.waste]
+    # 1. THE STACKED GRAPH
+    # To ensure it is 'Stacked', we provide the data in a specific format
+    st.write("### Yamazumi Balancing Chart")
+    chart_data = pd.DataFrame({
+        "Category": ["VA", "Walk", "Waste"],
+        "Seconds": [st.session_state.va, st.session_state.walk, st.session_state.waste]
     })
     
-    # Display Stacked Bar Graph
-    st.bar_chart(chart_df, color=["#2ecc71", "#3498db", "#e74c3c"])
+    # Using Altair-style stacking through Streamlit's native bar_chart
+    st.bar_chart(
+        data=pd.DataFrame({
+            "VA": [st.session_state.va],
+            "Walking": [st.session_state.walk],
+            "Waste": [st.session_state.waste]
+        }),
+        color=["#2ecc71", "#3498db", "#e74c3c"]
+    )
 
-    # Metrics and PDF
+    # 2. METRICS
     m1, m2 = st.columns(2)
     m1.metric("Cycle Time", f"{total}s")
     m2.metric("VA Ratio", f"{(st.session_state.va/total*100):.1f}%")
 
-    pdf_data = generate_pdf(st.session_state.va, st.session_state.walk, st.session_state.waste, station_id)
+    # 3. PDF DOWNLOAD
+    pdf_bytes = generate_pdf(st.session_state.va, st.session_state.walk, st.session_state.waste, station_id)
     st.download_button(
         label="📥 Download PDF Research Report",
-        data=pdf_data,
+        data=pdf_bytes,
         file_name=f"Yamazumi_{station_id}.pdf",
         mime="application/pdf",
         use_container_width=True
