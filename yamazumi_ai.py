@@ -2,21 +2,21 @@ import streamlit as st
 import streamlit.components.v1 as components
 import pandas as pd
 
-# --- Page Setup ---
-st.set_page_config(page_title="Yamazumi AR Realtime", layout="wide")
+# --- Page Setup (Mobile Optimized) ---
+st.set_page_config(page_title="Yamazumi AR Mobile", layout="centered")
 
-st.title("🛡️ Yamazumi AI: Real-time AR Mode")
-st.caption("Industrial Engineering Tool | Browser-Side AI Processing")
+st.title("📱 Yamazumi AI: Mobile AR")
+st.caption("PhD Research: Real-time Workload Analysis")
 
-# --- THE JAVASCRIPT AR ENGINE ---
-# This code runs MediaPipe on your local machine, NOT the server.
-# This bypasses all 'urllib' and 'Permission' errors.
+# --- THE JAVASCRIPT AR ENGINE (Mobile Version) ---
+# This version flips the mirror effect (so it's like a real camera) 
+# and requests the 'environment' (back) camera.
 ar_component = """
-<div style="position: relative;">
-    <video id="webcam" autoplay playsinline style="width: 100%; max-width: 640px; border-radius: 10px; transform: scaleX(-1);"></video>
-    <canvas id="output_canvas" style="position: absolute; left: 0; top: 0; width: 100%; max-width: 640px; transform: scaleX(-1);"></canvas>
-    <div id="status_box" style="position: absolute; top: 20px; left: 20px; padding: 15px; border-radius: 8px; color: white; font-family: sans-serif; font-weight: bold; font-size: 20px; background: rgba(0,0,0,0.6);">
-        Initializing AI...
+<div style="position: relative; width: 100%; overflow: hidden;">
+    <video id="webcam" autoplay playsinline style="width: 100%; border-radius: 15px; background: #000;"></video>
+    <canvas id="output_canvas" style="position: absolute; left: 0; top: 0; width: 100%;"></canvas>
+    <div id="status_box" style="position: absolute; top: 15px; left: 15px; right: 15px; padding: 12px; border-radius: 10px; color: white; font-family: sans-serif; font-weight: bold; font-size: 18px; text-align: center; background: rgba(0,0,0,0.6); transition: 0.3s;">
+        Detecting Worker...
     </div>
 </div>
 
@@ -35,7 +35,7 @@ const pose = new Pose({locateFile: (file) => {
 }});
 
 pose.setOptions({
-  modelComplexity: 0,
+  modelComplexity: 0, 
   smoothLandmarks: true,
   minDetectionConfidence: 0.5,
   minTrackingConfidence: 0.5
@@ -48,27 +48,25 @@ pose.onResults((results) => {
   ctx.save();
   ctx.clearRect(0, 0, canvas.width, canvas.height);
   
-  // Draw the video frame onto canvas (if needed, but video tag handles it)
-  
   if (results.poseLandmarks) {
-    // Draw Skeleton
-    drawConnectors(ctx, results.poseLandmarks, POSE_CONNECTIONS, {color: '#00FF00', lineWidth: 4});
-    drawLandmarks(ctx, results.poseLandmarks, {color: '#FF0000', lineWidth: 2});
+    // Skeleton Drawing
+    drawConnectors(ctx, results.poseLandmarks, POSE_CONNECTIONS, {color: '#00FF00', lineWidth: 3});
+    drawLandmarks(ctx, results.poseLandmarks, {color: '#FF0000', radius: 2});
     
-    // Yamazumi Logic: Nose vs Shoulders
+    // Yamazumi Logic
     const nose = results.poseLandmarks[0];
-    const shoulderL = results.poseLandmarks[11];
-    const shoulderR = results.poseLandmarks[12];
-    const avgShoulderY = (shoulderL.y + shoulderR.y) / 2;
+    const avgShoulderY = (results.poseLandmarks[11].y + results.poseLandmarks[12].y) / 2;
     
-    // Check posture
     if (nose.y > avgShoulderY + 0.05) {
         statusBox.innerText = "WASTE (Bending)";
-        statusBox.style.backgroundColor = "rgba(230, 126, 34, 0.8)"; // Orange
+        statusBox.style.backgroundColor = "rgba(230, 126, 34, 0.9)"; // Orange
     } else {
         statusBox.innerText = "VALUE-ADD (Working)";
-        statusBox.style.backgroundColor = "rgba(46, 204, 113, 0.8)"; // Green
+        statusBox.style.backgroundColor = "rgba(46, 204, 113, 0.9)"; // Green
     }
+  } else {
+      statusBox.innerText = "Searching for Worker...";
+      statusBox.style.backgroundColor = "rgba(0, 0, 0, 0.6)";
   }
   ctx.restore();
 });
@@ -77,6 +75,8 @@ const camera = new Camera(video, {
   onFrame: async () => {
     await pose.send({image: video});
   },
+  // FOR MOBILE: This requests the rear camera
+  facingMode: 'environment', 
   width: 640,
   height: 480
 });
@@ -84,41 +84,41 @@ camera.start();
 </script>
 """
 
-# --- Layout ---
-col_vid, col_stats = st.columns([2, 1])
+# --- Mobile UI Layout ---
+# On a phone, we show the camera first, then the buttons below it
+components.html(ar_component, height=450)
 
-with col_vid:
-    # This renders the AR view
-    components.html(ar_component, height=520)
-    st.info("💡 The AR overlay is processed in your browser for high-speed tracking.")
+st.divider()
 
-with col_stats:
-    st.subheader("Yamazumi Data Log")
-    
-    # Session state for tracking
-    if 'va' not in st.session_state: st.session_state.va = 0
-    if 'waste' not in st.session_state: st.session_state.waste = 0
-    
-    # Buttons to log the observation
-    st.write("Record current activity duration:")
-    log_step = st.slider("Duration (seconds)", 1, 10, 5)
-    
-    c1, c2 = st.columns(2)
-    if c1.button("➕ Log VA", use_container_width=True):
-        st.session_state.va += log_step
-    if c2.button("➕ Log Waste", use_container_width=True):
-        st.session_state.waste += log_step
-        
-    st.divider()
-    
-    # Charting
-    total = st.session_state.va + st.session_state.waste
-    st.metric("Total Observed Time", f"{total}s")
-    
-    chart_data = pd.DataFrame([{"VA": st.session_state.va, "Waste": st.session_state.waste}])
-    st.bar_chart(chart_data, color=["#2ecc71", "#e67e22"])
-    
-    if st.button("Reset Study"):
-        st.session_state.va = 0
-        st.session_state.waste = 0
-        st.rerun()
+# Log current activity
+if 'va' not in st.session_state: st.session_state.va = 0
+if 'waste' not in st.session_state: st.session_state.waste = 0
+
+st.subheader("📊 Workload Logger")
+st.write("Tap to record seconds spent in current posture:")
+
+# Bigger buttons for easy finger-tapping on mobile
+c1, c2 = st.columns(2)
+with c1:
+    if st.button("➕ Log 5s VA", type="primary", use_container_width=True):
+        st.session_state.va += 5
+with c2:
+    if st.button("➕ Log 5s Waste", use_container_width=True):
+        st.session_state.waste += 5
+
+# Live Summary Chart
+st.divider()
+total = st.session_state.va + st.session_state.waste
+st.metric("Total Observed Cycle Time", f"{total}s")
+
+chart_df = pd.DataFrame({
+    "Activity": ["Value-Add", "Waste"],
+    "Seconds": [st.session_state.va, st.session_state.waste]
+})
+
+st.bar_chart(chart_df.set_index("Activity"), color=["#2ecc71"])
+
+if st.button("Reset Study Data", use_container_width=True):
+    st.session_state.va = 0
+    st.session_state.waste = 0
+    st.rerun()
