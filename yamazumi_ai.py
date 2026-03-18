@@ -8,7 +8,7 @@ import time
 st.set_page_config(page_title="Yamazumi AI Analyzer", layout="centered")
 
 # --- PDF Logic (Fixed for PhD Reports) ---
-def generate_pdf(va, walk, waste, station):
+def generate_pdf(va, walk, waste, station, takt):
     pdf = FPDF()
     pdf.add_page()
     pdf.set_font("Arial", 'B', 16)
@@ -16,15 +16,18 @@ def generate_pdf(va, walk, waste, station):
     pdf.ln(10)
     pdf.set_font("Arial", size=12)
     pdf.cell(200, 10, txt=f"Station ID: {station}", ln=True)
+    pdf.cell(200, 10, txt=f"Target Takt Time: {takt}s", ln=True)
     pdf.cell(200, 10, txt=f"Date: {time.strftime('%Y-%m-%d %H:%M')}", ln=True)
     
     total = va + walk + waste
     pdf.ln(10)
-    pdf.cell(60, 10, "Category", 1); pdf.cell(60, 10, "Time (s)", 1, 1)
+    pdf.set_fill_color(230, 230, 230)
+    pdf.cell(60, 10, "Category", 1, 0, 'C', True); pdf.cell(60, 10, "Time (s)", 1, 1, 'C', True)
     pdf.cell(60, 10, "Value-Add", 1); pdf.cell(60, 10, f"{va}s", 1, 1)
     pdf.cell(60, 10, "Walking", 1); pdf.cell(60, 10, f"{walk}s", 1, 1)
     pdf.cell(60, 10, "Waste", 1); pdf.cell(60, 10, f"{waste}s", 1, 1)
-    pdf.cell(60, 10, "TOTAL", 1); pdf.cell(60, 10, f"{total}s", 1, 1)
+    pdf.set_font("Arial", 'B', 12)
+    pdf.cell(60, 10, "TOTAL CYCLE", 1); pdf.cell(60, 10, f"{total}s", 1, 1)
     
     return pdf.output(dest='S').encode('latin-1')
 
@@ -36,7 +39,12 @@ if 'is_running' not in st.session_state: st.session_state.is_running = False
 if 'show_results' not in st.session_state: st.session_state.show_results = False
 
 st.title("🛡️ Yamazumi AI: Final Assembly")
-station_id = st.text_input("Station Name", "ASSY-LINE-ST01")
+
+col_head1, col_head2 = st.columns(2)
+with col_head1:
+    station_id = st.text_input("Station Name", "ASSY-ST-01")
+with col_head2:
+    takt_time = st.number_input("Target Takt (s)", value=60)
 
 # --- AR ENGINE ---
 ar_html = f"""
@@ -94,7 +102,7 @@ if c3.button("🔄 RESET", use_container_width=True):
     st.session_state.show_results = False
     st.rerun()
 
-# --- LIVE LOGGING (Only visible when running) ---
+# --- LIVE LOGGING ---
 if st.session_state.is_running:
     st.info("Log the activity pulses below while watching the AR Skeleton:")
     b1, b2, b3 = st.columns(3)
@@ -102,38 +110,38 @@ if st.session_state.is_running:
     if b2.button("+1s WALKING"): st.session_state.walk += 1
     if b3.button("+1s WASTE"): st.session_state.waste += 1
 
-# --- THE RESULTS BLOCK (Force-Visible after STOP) ---
+# --- THE RESULTS BLOCK ---
 total = st.session_state.va + st.session_state.walk + st.session_state.waste
 
 if st.session_state.show_results and total > 0:
-    st.success("✅ Analysis Complete! See Report Below:")
+    st.success("✅ Analysis Complete!")
     st.divider()
     
-    # 1. THE STACKED GRAPH
-    # To ensure it is 'Stacked', we provide the data in a specific format
-    st.write("### Yamazumi Balancing Chart")
-    chart_data = pd.DataFrame({
-        "Category": ["VA", "Walk", "Waste"],
-        "Seconds": [st.session_state.va, st.session_state.walk, st.session_state.waste]
+    st.write(f"### Yamazumi Chart: {station_id}")
+    
+    # Stacked Bar Data
+    chart_df = pd.DataFrame({
+        "Value-Add (VA)": [st.session_state.va],
+        "Walking (NVA)": [st.session_state.walk],
+        "Bending Waste": [st.session_state.waste]
     })
     
-    # Using Altair-style stacking through Streamlit's native bar_chart
-    st.bar_chart(
-        data=pd.DataFrame({
-            "VA": [st.session_state.va],
-            "Walking": [st.session_state.walk],
-            "Waste": [st.session_state.waste]
-        }),
-        color=["#2ecc71", "#3498db", "#e74c3c"]
-    )
+    # Render Graph with Takt Time Reference
+    st.bar_chart(chart_df, color=["#2ecc71", "#3498db", "#e74c3c"])
+    
+    # Visual Takt Comparison
+    if total > takt_time:
+        st.error(f"🚨 OVER TAKT: Cycle is {total - takt_time}s slower than target.")
+    else:
+        st.success(f"🟢 UNDER TAKT: Station is balanced ({takt_time - total}s buffer).")
 
-    # 2. METRICS
+    # Metrics
     m1, m2 = st.columns(2)
-    m1.metric("Cycle Time", f"{total}s")
-    m2.metric("VA Ratio", f"{(st.session_state.va/total*100):.1f}%")
+    m1.metric("Total Cycle", f"{total}s", delta=f"{total-takt_time}s vs Takt", delta_color="inverse")
+    m2.metric("Efficiency", f"{(st.session_state.va/total*100):.1f}%")
 
-    # 3. PDF DOWNLOAD
-    pdf_bytes = generate_pdf(st.session_state.va, st.session_state.walk, st.session_state.waste, station_id)
+    # PDF DOWNLOAD
+    pdf_bytes = generate_pdf(st.session_state.va, st.session_state.walk, st.session_state.waste, station_id, takt_time)
     st.download_button(
         label="📥 Download PDF Research Report",
         data=pdf_bytes,
