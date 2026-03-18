@@ -1,16 +1,16 @@
 import streamlit as st
 import streamlit.components.v1 as components
 import pandas as pd
+import numpy as np
 
-# --- Page Setup (Mobile Optimized) ---
+# --- Page Config for Mobile ---
 st.set_page_config(page_title="Yamazumi AR Mobile", layout="centered")
 
 st.title("📱 Yamazumi AI: Mobile AR")
-st.caption("PhD Research: Real-time Workload Analysis")
+st.caption("PhD Research: Real-time Workload & Energy Analysis")
 
-# --- THE JAVASCRIPT AR ENGINE (Mobile Version) ---
-# This version flips the mirror effect (so it's like a real camera) 
-# and requests the 'environment' (back) camera.
+# --- THE JAVASCRIPT AR ENGINE ---
+# This runs MediaPipe on the phone's hardware, NOT the Streamlit server.
 ar_component = """
 <div style="position: relative; width: 100%; overflow: hidden;">
     <video id="webcam" autoplay playsinline style="width: 100%; border-radius: 15px; background: #000;"></video>
@@ -49,11 +49,11 @@ pose.onResults((results) => {
   ctx.clearRect(0, 0, canvas.width, canvas.height);
   
   if (results.poseLandmarks) {
-    // Skeleton Drawing
+    // Draw Skeleton
     drawConnectors(ctx, results.poseLandmarks, POSE_CONNECTIONS, {color: '#00FF00', lineWidth: 3});
     drawLandmarks(ctx, results.poseLandmarks, {color: '#FF0000', radius: 2});
     
-    // Yamazumi Logic
+    // Yamazumi Logic: Nose vs Shoulders
     const nose = results.poseLandmarks[0];
     const avgShoulderY = (results.poseLandmarks[11].y + results.poseLandmarks[12].y) / 2;
     
@@ -75,8 +75,7 @@ const camera = new Camera(video, {
   onFrame: async () => {
     await pose.send({image: video});
   },
-  // FOR MOBILE: This requests the rear camera
-  facingMode: 'environment', 
+  facingMode: 'environment', // Forces Back Camera
   width: 640,
   height: 480
 });
@@ -84,41 +83,69 @@ camera.start();
 </script>
 """
 
-# --- Mobile UI Layout ---
-# On a phone, we show the camera first, then the buttons below it
+# Render Camera
 components.html(ar_component, height=450)
 
 st.divider()
 
-# Log current activity
+# --- ANALYSIS & DATA LOGGING ---
 if 'va' not in st.session_state: st.session_state.va = 0
 if 'waste' not in st.session_state: st.session_state.waste = 0
 
-st.subheader("📊 Workload Logger")
-st.write("Tap to record seconds spent in current posture:")
+st.subheader("📊 Live Study Log")
 
-# Bigger buttons for easy finger-tapping on mobile
+# Research Inputs
 c1, c2 = st.columns(2)
 with c1:
-    if st.button("➕ Log 5s VA", type="primary", use_container_width=True):
-        st.session_state.va += 5
+    weld_id = st.text_input("Weld Joint ID", "W-001")
 with c2:
-    if st.button("➕ Log 5s Waste", use_container_width=True):
-        st.session_state.waste += 5
+    current_amp = st.number_input("Welding Current (kA)", value=8.0)
 
-# Live Summary Chart
+st.info("Observe the AR status box above. Tap a button below to log the step duration.")
+
+# Logging Buttons (Large for Mobile)
+log_seconds = st.slider("Seconds per step", 1, 10, 5)
+
+btn_col1, btn_col2 = st.columns(2)
+with btn_col1:
+    if st.button("➕ LOG VA", type="primary", use_container_width=True):
+        st.session_state.va += log_seconds
+        st.toast(f"Added {log_seconds}s to Value-Add")
+
+with btn_col2:
+    if st.button("➕ LOG WASTE", use_container_width=True):
+        st.session_state.waste += log_seconds
+        st.toast(f"Added {log_seconds}s to Waste")
+
+# --- RESULTS & CHARTING ---
 st.divider()
-total = st.session_state.va + st.session_state.waste
-st.metric("Total Observed Cycle Time", f"{total}s")
+total_time = st.session_state.va + st.session_state.waste
+va_ratio = (st.session_state.va / total_time * 100) if total_time > 0 else 0
 
-chart_df = pd.DataFrame({
-    "Activity": ["Value-Add", "Waste"],
+m1, m2, m3 = st.columns(3)
+m1.metric("Total Time", f"{total_time}s")
+m2.metric("Efficiency", f"{va_ratio:.1f}%")
+m3.metric("Status", "Balanced" if va_ratio > 80 else "Check Waste")
+
+# Yamazumi Bar Chart
+chart_data = pd.DataFrame({
+    "Type": ["Value-Add", "Waste"],
     "Seconds": [st.session_state.va, st.session_state.waste]
 })
+st.bar_chart(chart_data.set_index("Type"), color=["#2ecc71"])
 
-st.bar_chart(chart_df.set_index("Activity"), color=["#2ecc71"])
+# PhD Export
+if total_time > 0:
+    df_export = pd.DataFrame([{
+        "Weld_ID": weld_id,
+        "Current_kA": current_amp,
+        "VA_Seconds": st.session_state.va,
+        "Waste_Seconds": st.session_state.waste,
+        "Efficiency": va_ratio
+    }])
+    st.download_button("📩 Download CSV for Thesis", df_export.to_csv(index=False), f"Study_{weld_id}.csv")
 
-if st.button("Reset Study Data", use_container_width=True):
+if st.button("Reset Data"):
     st.session_state.va = 0
     st.session_state.waste = 0
     st.rerun()
